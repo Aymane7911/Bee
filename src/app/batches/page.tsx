@@ -415,8 +415,7 @@ const [certificationData, setCertificationData] = useState<any>(null);const [qrC
     
     // Create the certification verification URL
     // Replace 'your-domain.com' with your actual domain
-   const certificationUrl = `${process.env.BASE_URL}/cert/${data.verification}`;
-    
+const certificationUrl = `${process.env.REACT_APP_BASE_URL || 'http://localhost:3000'}/cert/${data.verification}`;    
     // Alternative shorter URL approach using verification code only:
     // const certificationUrl = `https://your-domain.com/cert/${data.verification}`;
     
