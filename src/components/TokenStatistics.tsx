@@ -7,7 +7,7 @@ interface TokenStats {
   remainingTokens: number;
   totalTokens: number;
   usedTokens?: number;
-  bothCertifications?: number; // Added to match your prop type
+  bothCertifications?: number;
 }
 
 interface TokenStatisticsProps {
@@ -15,14 +15,16 @@ interface TokenStatisticsProps {
 }
 
 const getTokenFromStorage = (): string | null => {
-  if (typeof window === 'undefined') return null; // SSR safe
+  if (typeof window === 'undefined') return null;
   return (
-    localStorage.getItem('authtoken') ||
-    localStorage.getItem('auth_token') ||
-    localStorage.getItem('token') ||
-    sessionStorage.getItem('authtoken') ||
-    sessionStorage.getItem('auth_token') ||
-    sessionStorage.getItem('token')
+    window.localStorage?.getItem('authtoken') ||
+    window.localStorage?.getItem('auth_token') ||
+    window.localStorage?.getItem('token') ||
+    window.localStorage?.getItem('authToken') ||
+    window.sessionStorage?.getItem('authtoken') ||
+    window.sessionStorage?.getItem('auth_token') ||
+    window.sessionStorage?.getItem('token') ||
+    window.sessionStorage?.getItem('authToken')
   );
 };
 
@@ -51,9 +53,16 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
   
   const [isUpdating, setIsUpdating] = useState(false);
   
-  // Auth state with localStorage support
-   const [authToken, setAuthToken] = useState<string | null>(getTokenFromStorage);
-  const [isAuthenticated, setIsAuthenticated] = useState(!!getTokenFromStorage());
+  // Auth state
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // Initialize auth state
+  useEffect(() => {
+    const token = getTokenFromStorage();
+    setAuthToken(token);
+    setIsAuthenticated(!!token);
+  }, []);
 
   // Default stats
   const defaultStats: TokenStats = {
@@ -64,22 +73,30 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
   };
 
   const getAuthHeaders = () => {
-  const token = authToken || localStorage.getItem('authToken');
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    const token = authToken || getTokenFromStorage();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    
+    return headers;
   };
-  
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  
-  return headers;
-};
 
   // Fetch token stats from API
   const fetchTokenStats = async () => {
-    // If props are provided, use them instead of fetching
-    if (propTokenStats) {
+    // Check if propTokenStats has meaningful data
+    const hasValidPropData = propTokenStats && (
+      propTokenStats.totalTokens > 0 || 
+      propTokenStats.originOnly > 0 || 
+      propTokenStats.qualityOnly > 0 || 
+      propTokenStats.remainingTokens > 0
+    );
+
+    // Only use props if they contain meaningful data
+    if (hasValidPropData) {
       setApiTokenStats(propTokenStats);
       const totalUsed = propTokenStats.totalTokens - propTokenStats.remainingTokens;
       setLiveTokenStats({
@@ -95,6 +112,7 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
 
     try {
       setLoading(true);
+      setError(null);
       
       const headers = getAuthHeaders();
       const fetchOptions: RequestInit = {
@@ -103,17 +121,27 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
         credentials: 'include',
       };
 
+      console.log('Fetching token stats with headers:', headers);
       const response = await fetch('/api/token-stats/update', fetchOptions);
       
+      console.log('Response status:', response.status);
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+      
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API Error Response:', errorText);
+        
         if (response.status === 401) {
           setIsAuthenticated(false);
+          setAuthToken(null);
           throw new Error('Authentication required. Please log in.');
         }
-        throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
+        
+        throw new Error(`Server responded with ${response.status}: ${response.statusText}. ${errorText}`);
       }
       
       const data = await response.json();
+      console.log('API Response data:', data);
       
       // Validate response structure
       if (!data || typeof data !== 'object') {
@@ -122,11 +150,12 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
       
       // Map API response to our structure with defaults
       const stats: TokenStats = {
-        originOnly: data.originOnly || 0,
-        qualityOnly: data.qualityOnly || 0,
-        remainingTokens: data.remainingTokens || 0,
-        totalTokens: data.totalTokens || 0,
-        usedTokens: data.usedTokens || 0
+        originOnly: Number(data.originOnly) || 0,
+        qualityOnly: Number(data.qualityOnly) || 0,
+        remainingTokens: Number(data.remainingTokens) || 0,
+        totalTokens: Number(data.totalTokens) || 0,
+        usedTokens: Number(data.usedTokens) || 0,
+        bothCertifications: Number(data.bothCertifications) || 0
       };
       
       setApiTokenStats(stats);
@@ -134,7 +163,7 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
       setIsAuthenticated(true);
       
       // Calculate initial live stats
-      const totalUsed = stats.totalTokens - stats.remainingTokens;
+      const totalUsed = stats.usedTokens || (stats.totalTokens - stats.remainingTokens);
       const hasValidData = stats.totalTokens > 0 || totalUsed > 0 || 
                           stats.originOnly > 0 || stats.qualityOnly > 0;
       
@@ -154,8 +183,8 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
       const errorMessage = err instanceof Error ? err.message : 'Failed to load token statistics';
       setError(errorMessage);
       
-      // Set demo data if API fails
-      if (!hasReceivedValidData) {
+      // Set demo data if API fails and we haven't received valid data yet
+      if (!hasReceivedValidData && !propTokenStats) {
         const demoStats = {
           originOnly: 150,
           qualityOnly: 200,
@@ -178,14 +207,34 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
     }
   };
 
-  // Initial fetch
+  // Initial fetch when component mounts or auth changes
   useEffect(() => {
-    fetchTokenStats();
-  }, [propTokenStats]); // Re-run when props change
+    const hasValidPropData = propTokenStats && (
+      propTokenStats.totalTokens > 0 || 
+      propTokenStats.originOnly > 0 || 
+      propTokenStats.qualityOnly > 0 || 
+      propTokenStats.remainingTokens > 0
+    );
 
-  // Handle batch completion events (only if not using props)
+    if (hasValidPropData) {
+      fetchTokenStats();
+    } else if (isAuthenticated) {
+      fetchTokenStats();
+    } else {
+      setLoading(false);
+    }
+  }, [propTokenStats, isAuthenticated]);
+
+  // Handle batch completion events (only if not using valid props)
   useEffect(() => {
-    if (propTokenStats) return; // Skip event listeners when using props
+    const hasValidPropData = propTokenStats && (
+      propTokenStats.totalTokens > 0 || 
+      propTokenStats.originOnly > 0 || 
+      propTokenStats.qualityOnly > 0 || 
+      propTokenStats.remainingTokens > 0
+    );
+
+    if (hasValidPropData) return;
 
     const handleBatchCompleted = (event: CustomEvent) => {
       const { 
@@ -221,8 +270,6 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
 
       setTimeout(() => setIsUpdating(false), 1000);
       setTimeout(() => setRecentActivity(null), 3000);
-      
-      // Refresh data from API after delay to ensure consistency
       setTimeout(fetchTokenStats, 2000);
     };
 
@@ -251,8 +298,6 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
 
       setTimeout(() => setIsUpdating(false), 1000);
       setTimeout(() => setRecentActivity(null), 3000);
-      
-      // Refresh data from API
       setTimeout(fetchTokenStats, 2000);
     };
 
@@ -265,8 +310,16 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
     };
   }, [propTokenStats]);
 
-  // Use prop stats, API stats, or defaults in that order
-  const stats = propTokenStats || apiTokenStats || defaultStats;
+  // Check if propTokenStats has meaningful data (for rendering decisions)
+  const hasValidPropData = propTokenStats && (
+    propTokenStats.totalTokens > 0 || 
+    propTokenStats.originOnly > 0 || 
+    propTokenStats.qualityOnly > 0 || 
+    propTokenStats.remainingTokens > 0
+  );
+
+  // Use prop stats only if they have meaningful data, otherwise use API stats or defaults
+  const stats = (hasValidPropData ? propTokenStats : apiTokenStats) || defaultStats;
 
   // Prepare data for charts
   const pieData = [
@@ -291,14 +344,14 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
     return null;
   };
 
-  // Login function with localStorage persistence
+  // Login function for demo/testing
   const handleLogin = async () => {
     try {
-      // For demo purposes, simulate a successful login
       const token = 'demo-token-123';
       
-      // Store token in localStorage
-      localStorage.setItem('authToken', token);
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem('authToken', token);
+      }
       setAuthToken(token);
       setIsAuthenticated(true);
       setError(null);
@@ -312,7 +365,14 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
 
   // Logout function
   const handleLogout = () => {
-    localStorage.removeItem('authToken');
+    if (typeof window !== 'undefined') {
+      const keysToRemove = ['authToken', 'authtoken', 'auth_token', 'token'];
+      keysToRemove.forEach(key => {
+        window.localStorage?.removeItem(key);
+        window.sessionStorage?.removeItem(key);
+      });
+    }
+    
     setAuthToken(null);
     setIsAuthenticated(false);
     setApiTokenStats(null);
@@ -325,24 +385,37 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
     setHasReceivedValidData(false);
   };
 
-  // Loading state (skip if using props)
-  if (loading && !propTokenStats) {
+  // Debug info
+  
+
+  // Loading state (skip if using valid props)
+  if (loading && !hasValidPropData) {
     return (
       <div className="bg-white p-4 rounded-lg shadow flex justify-center items-center h-64">
         <div className="flex flex-col items-center">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
           <p className="mt-4 text-gray-600">Loading token statistics...</p>
+          <details className="mt-2 text-xs">
+            
+            
+          </details>
         </div>
       </div>
     );
   }
 
-  // Error state with auth check (skip if using props)
-  if (error && !propTokenStats) {
+  // Error state with auth check (skip if using valid props)
+  if (error && !hasValidPropData) {
     return (
       <div className="bg-white p-4 rounded-lg shadow">
-        <h2 className="text-lg font-semibold text-red-600">Error</h2>
+        <h2 className="text-lg font-semibold text-red-600">Error Loading Token Statistics</h2>
         <p className="text-gray-600 mb-4">{error}</p>
+        
+        <details className="mb-4 text-xs">
+          <summary className="cursor-pointer text-gray-400">Debug Info</summary>
+         
+        </details>
+        
         <div className="flex gap-2">
           <button 
             className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
@@ -368,7 +441,7 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-lg font-semibold">Certification Tokens</h2>
         <div className="flex items-center gap-4">
-          {isAuthenticated && !propTokenStats && (
+          {isAuthenticated && !hasValidPropData && (
             <div className="flex items-center gap-2">
               <span className="text-sm text-green-600">● Connected</span>
               <button 
@@ -379,9 +452,20 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
               </button>
             </div>
           )}
-          {propTokenStats && (
+          {hasValidPropData && (
             <div className="flex items-center gap-2">
               <span className="text-sm text-blue-600">● Using provided data</span>
+            </div>
+          )}
+          {!isAuthenticated && !hasValidPropData && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-red-600">● Not authenticated</span>
+              <button 
+                onClick={handleLogin}
+                className="text-sm text-green-600 hover:text-green-800 underline"
+              >
+                Login (Demo)
+              </button>
             </div>
           )}
           {isUpdating && (
@@ -568,6 +652,12 @@ const TokenStatistics: React.FC<TokenStatisticsProps> = ({ tokenStats: propToken
           </div>
         </div>
       )}
+
+      {/* Debug Section (only show in development) */}
+      <details className="mt-4 text-xs text-gray-400">
+        <summary className="cursor-pointer">Debug Information</summary>
+        
+      </details>
     </div>
   );
 };
