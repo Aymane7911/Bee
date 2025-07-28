@@ -140,26 +140,59 @@ export async function POST(request: Request) {
       }, { status: 500 });
     }
 
-    // Step 6: Get and verify default database ID
+    // Step 6: Get and verify default database ID - FIXED QUERY
     console.log('[STEP 6] Getting and verifying default database...');
     let defaultDatabaseId = process.env.DEFAULT_DATABASE_ID!;
     
-    // Verify the database exists and get the correct ID
-    const databaseResult = await pool.query(
-      'SELECT id, name, display_name FROM databases WHERE is_active = true LIMIT 1'
-    );
+    // First try to get the specific database from env var
+    let databaseResult;
+    try {
+      console.log('[STEP 6] Attempting to use DEFAULT_DATABASE_ID:', defaultDatabaseId);
+      databaseResult = await pool.query(
+        'SELECT id, name, display_name FROM databases WHERE id = $1 AND is_active = TRUE',
+        [defaultDatabaseId]
+      );
+    } catch (error: any) {
+      console.log('[STEP 6] Error querying specific database ID:', error.message);
+    }
     
-    if (databaseResult.rowCount === 0) {
-      console.log('[ERROR] No active database found');
+    // If specific database not found or error occurred, get any active database
+    if (!databaseResult || databaseResult.rowCount === 0) {
+      console.log('[STEP 6] Specific database not found, getting any active database...');
+      try {
+        databaseResult = await pool.query(
+          'SELECT id, name, display_name FROM databases WHERE is_active = TRUE ORDER BY created_at ASC LIMIT 1'
+        );
+      } catch (error: any) {
+        console.log('[STEP 6] Error querying active databases:', error.message);
+        // Try without boolean comparison in case of data type issues
+        databaseResult = await pool.query(
+          'SELECT id, name, display_name FROM databases ORDER BY created_at ASC LIMIT 1'
+        );
+      }
+    }
+    
+    if (!databaseResult || databaseResult.rowCount === 0) {
+      console.log('[ERROR] No database found in databases table');
+      console.log('[DEBUG] Checking databases table structure...');
+      
+      // Debug: Check what's actually in the databases table
+      try {
+        const debugResult = await pool.query('SELECT id, name, display_name, is_active FROM databases LIMIT 5');
+        console.log('[DEBUG] Databases found:', debugResult.rows);
+      } catch (debugError: any) {
+        console.log('[DEBUG] Error checking databases table:', debugError.message);
+      }
+
       return NextResponse.json({ 
-        message: 'No active database available',
-        error: 'Database configuration error'
+        message: 'No database available',
+        error: 'Database configuration error - no databases found'
       }, { status: 500 });
     }
     
-    // Use the first active database found
+    // Use the found database
     defaultDatabaseId = databaseResult.rows[0].id;
-    console.log('[STEP 6] ✓ Using verified database ID:', defaultDatabaseId);
+    console.log('[STEP 6] ✓ Using database ID:', defaultDatabaseId);
     console.log('[STEP 6] ✓ Database name:', databaseResult.rows[0].display_name);
 
     // Step 7: Check for existing user

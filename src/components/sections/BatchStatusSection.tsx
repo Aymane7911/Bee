@@ -192,7 +192,7 @@ const BatchStatusSection = ({
 
       <div className="space-y-2">
         {displayedBatches.length > 0 ? (
-          displayedBatches.map((batch) => {
+          displayedBatches.map((batch, batchIndex) => {
             // Use real data from API instead of sample values
             const totalHoneyCollected = batch.totalHoneyCollected || batch.weightKg || 0;
             const originOnlyAmount = batch.originOnly || 0;
@@ -216,6 +216,7 @@ const BatchStatusSection = ({
             
             const certificationData = [
               {
+                id: `${batch.id}-origin`,
                 color: "bg-blue-500",
                 label: "Origin Certified",
                 value: originOnlyAmount,
@@ -223,6 +224,7 @@ const BatchStatusSection = ({
                 jars: originOnlyJars
               },
               {
+                id: `${batch.id}-quality`,
                 color: "bg-green-500",
                 label: "Quality Certified",
                 value: qualityOnlyAmount,
@@ -230,6 +232,7 @@ const BatchStatusSection = ({
                 jars: qualityOnlyJars
               },
               {
+                id: `${batch.id}-both`,
                 color: "bg-purple-500",
                 label: "Both Certifications",
                 value: bothCertificationsAmount,
@@ -237,6 +240,7 @@ const BatchStatusSection = ({
                 jars: bothCertificationsJars
               },
               {
+                id: `${batch.id}-uncertified`,
                 color: "bg-gray-400",
                 label: "Uncertified",
                 value: uncertifiedAmount,
@@ -246,14 +250,14 @@ const BatchStatusSection = ({
             ];
             
             const pieData = [
-              { name: 'Origin Certified', value: originOnlyAmount, color: '#3B82F6' },
-              { name: 'Quality Certified', value: qualityOnlyAmount, color: '#10B981' },
-              { name: 'Both Certifications', value: bothCertificationsAmount, color: '#8B5CF6' },
-              { name: 'Uncertified', value: uncertifiedAmount, color: '#9CA3AF' }
+              { name: 'Origin Certified', value: originOnlyAmount, color: '#3B82F6', id: `${batch.id}-pie-origin` },
+              { name: 'Quality Certified', value: qualityOnlyAmount, color: '#10B981', id: `${batch.id}-pie-quality` },
+              { name: 'Both Certifications', value: bothCertificationsAmount, color: '#8B5CF6', id: `${batch.id}-pie-both` },
+              { name: 'Uncertified', value: uncertifiedAmount, color: '#9CA3AF', id: `${batch.id}-pie-uncertified` }
             ].filter(item => item.value > 0); // Only show non-zero values in pie chart
 
             return (
-              <div key={batch.id} className="border rounded-lg bg-gray-50 overflow-hidden">
+              <div key={`batch-${batch.id}-${batchIndex}`} className="border rounded-lg bg-gray-50 overflow-hidden">
                 <div 
                   className="p-3 bg-gray-100 cursor-pointer flex justify-between items-center"
                   onClick={() => toggleBatchExpansion(batch.id)}
@@ -328,8 +332,9 @@ const BatchStatusSection = ({
                         <div className="h-48 flex items-center justify-center">
                           <div className="relative w-40 h-40">
                             <ResponsiveContainer width="100%" height="100%">
-                              <PieChart>
+                              <PieChart key={`pie-chart-${batch.id}`}>
                                 <Pie
+                                  key={`pie-${batch.id}`}
                                   data={pieData}
                                   cx="50%"
                                   cy="50%"
@@ -338,8 +343,8 @@ const BatchStatusSection = ({
                                   fill="#8884d8"
                                   dataKey="value"
                                 >
-                                  {pieData.map((entry, index) => (
-                                    <Cell key={`cell-${index}`} fill={entry.color} />
+                                  {pieData.map((entry) => (
+                                    <Cell key={entry.id} fill={entry.color} />
                                   ))}
                                 </Pie>
                                 <Tooltip formatter={(value) => [`${Number(value).toFixed(1)} kg`, 'Weight']} />
@@ -357,9 +362,9 @@ const BatchStatusSection = ({
                       <div className="border rounded-lg p-4 bg-gray-50">
                         <h3 className="text-md font-semibold mb-3">Certification Breakdown</h3>
                         <div className="flex flex-wrap justify-between mb-4">
-                          {certificationData.map((item, index) => (
+                          {certificationData.map((item) => (
                             <div 
-                              key={index} 
+                              key={item.id}
                               className="p-3 bg-white rounded-lg shadow mb-2 w-full md:w-5/12 cursor-pointer transform transition-transform hover:scale-105 hover:shadow-md"
                               onClick={(e) => {
                                 e.stopPropagation();

@@ -251,34 +251,58 @@ const CreateBatchModal = ({
             ) : (
               <select
                 value={selectedDropdownApiary || ""}
-                onChange={(e) => {
-                  const apiaryId = e.target.value;
-                  setSelectedDropdownApiary(apiaryId);
-                  
-                  if (apiaryId) {
-                    const apiary = availableApiaries.find(a => 
-                      a.id === apiaryId
-                    );
-                    
-                    if (apiary) {
-                      const isAlreadySelected = selectedApiaries.some(a => 
-                        a.id === apiary.id
-                      );
-                      
-                      if (!isAlreadySelected) {
-                        // Convert Apiary to SelectedApiary when adding
-                        const selectedApiary = convertApiaryToSelectedApiary(apiary);
-                        setSelectedApiaries((prev: any[]) => [...prev, selectedApiary]);
-                        setTimeout(() => setSelectedDropdownApiary(''), 100);
-                      } else {
-                        setSelectedDropdownApiary('');
-                        alert('This apiary is already selected!');
-                      }
-                    } else {
-                      setSelectedDropdownApiary('');
-                    }
-                  }
-                }}
+               onChange={(e) => {
+  const apiaryId = e.target.value;
+  
+  console.log('=== APIARY SELECTION DEBUG ===');
+  console.log('1. Selected apiary ID from dropdown:', apiaryId, typeof apiaryId);
+  
+  setSelectedDropdownApiary(apiaryId);
+  
+  if (apiaryId && apiaryId !== '') {
+    console.log('2. Available apiary IDs and types:');
+    availableApiaries.forEach(a => {
+      console.log(`   - ${a.name}: ID=${a.id} (${typeof a.id})`);
+    });
+    
+    // Clean type-safe comparison - convert both to same type
+    const apiary = availableApiaries.find(a => String(a.id) === String(apiaryId));
+    
+    console.log('3. Found apiary:', apiary ? apiary.name : 'NOT FOUND');
+    
+    if (apiary) {
+      const isAlreadySelected = selectedApiaries.some(a => 
+        String(a.id) === String(apiary.id)
+      );
+      
+      console.log('4. Is already selected:', isAlreadySelected);
+      
+      if (!isAlreadySelected) {
+        console.log('5. Adding apiary to selection...');
+        const selectedApiary = convertApiaryToSelectedApiary(apiary);
+        
+        setSelectedApiaries(prev => {
+          const newArray = [...prev, selectedApiary];
+          console.log('6. New selectedApiaries array length:', newArray.length);
+          return newArray;
+        });
+        
+        // Reset dropdown
+        setSelectedDropdownApiary('');
+        
+      } else {
+        console.log('7. Apiary already selected');
+        setSelectedDropdownApiary('');
+        alert('This apiary is already selected!');
+      }
+    } else {
+      console.error('8. Apiary not found - check data types and IDs');
+      setSelectedDropdownApiary('');
+    }
+  }
+  
+  console.log('=== END DEBUG ===\n');
+}}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500"
               >
                 <option value="">Select an apiary to add...</option>
@@ -373,27 +397,8 @@ const CreateBatchModal = ({
 
                           {/* Add fields for the additional SelectedApiary properties */}
                           <div>
-                            <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide">
-                              Honey Collected (kg)
-                            </label>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.1"
-                              value={apiary.honeyCollected}
-                                onChange={(e) => {
-                                  const newHoneyCollected = parseFloat(e.target.value) || 0;
-                                  setSelectedApiaries((prev: any[]) => 
-                                    prev.map(a => 
-                                      a.id === apiary.id 
-                                        ? { ...a, honeyCollected: newHoneyCollected, kilosCollected: newHoneyCollected } 
-                                        : a
-                                    )
-                                  );
-                                }}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-md text-gray-700 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500"
-                              placeholder="Enter honey collected from this apiary"
-                            />
+                            
+                            
                           </div>
                         </div>
                         

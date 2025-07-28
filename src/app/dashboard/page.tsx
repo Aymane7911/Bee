@@ -285,7 +285,7 @@ export default function JarManagementDashboard() {
   const googleMapRef = useRef<google.maps.Map | null>(null);
   const miniMapRef = useRef<HTMLDivElement | null>(null); 
   const miniGoogleMapRef = useRef<google.maps.Map | null>(null);
-  const googleMapsApiKey = "AIzaSyBhRpOpnKWIXGMOTsdVoGKAnAC94Q0Sgxc"; 
+  const googleMapsApiKey = "AIzaSyD5huvOzXDwzQnS6xN9NZ_zKGZ5pX28XUs"; 
   const [savedApiaryLocations, setSavedApiaryLocations] = useState<ApiaryLocation[]>([]);
   const [showApiaryModal, setShowApiaryModal] = useState(false);
   const [availableApiaries, setAvailableApiaries] = useState<Apiary[]>([]); // List of all created apiaries
