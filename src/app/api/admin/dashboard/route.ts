@@ -79,32 +79,49 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
     console.log('=== Dashboard API Debug ===');
     console.log('Connection pool stats:', getConnectionPoolStats());
     
-    // Get admin session - this might fail if database validation fails
+    // Enhanced cookie debugging
+    const cookies = request.cookies;
+    console.log('Available cookies:', cookies.getAll().map(c => ({ name: c.name, hasValue: !!c.value })));
+    
+    // Try multiple cookie names for the admin token
+    const adminTokenNames = ['admin-token', 'admin_token', 'adminToken'];
+    let adminToken: string | undefined;
+    
+    for (const tokenName of adminTokenNames) {
+      const token = cookies.get(tokenName)?.value;
+      if (token) {
+        adminToken = token;
+        console.log(`Found admin token in cookie: ${tokenName}`);
+        break;
+      }
+    }
+    
+    // Also check Authorization header
+    const authHeader = request.headers.get('authorization');
+    if (!adminToken && authHeader?.startsWith('Bearer ')) {
+      adminToken = authHeader.substring(7);
+      console.log('Found admin token in Authorization header');
+    }
+    
+    if (!adminToken) {
+      console.log('No admin token found in any location');
+      return NextResponse.json(
+        { success: false, error: 'Authentication required. Please log in.' },
+        { status: 401 }
+      );
+    }
+    
+    // Verify JWT token manually with better error handling
     let adminSession;
     try {
-      adminSession = await getAdminFromRequest(request);
-      console.log('Admin session retrieved successfully:', {
-        adminId: adminSession.adminId,
-        email: adminSession.email,
-        role: adminSession.role,
-        databaseId: adminSession.databaseId,
-        databaseUrl: adminSession.databaseUrl ? 'Present' : 'Missing'
-      });
-    } catch (authError) {
-      // If getAdminFromRequest fails, try to extract info directly from JWT
-      console.log('Direct admin auth failed, trying JWT extraction...');
+      const jwt = require('jsonwebtoken');
+      const jwtSecret = process.env.JWT_SECRET;
       
-      // Extract token manually (fallback approach)
-      const cookies = request.cookies;
-      const adminToken = cookies.get('admin-token')?.value;
-      
-      if (!adminToken) {
-        throw new Error('No authentication token found');
+      if (!jwtSecret) {
+        throw new Error('JWT_SECRET not configured');
       }
       
-      // Verify JWT manually (you'll need to import jwt)
-      const jwt = require('jsonwebtoken');
-      const decoded = jwt.verify(adminToken, process.env.JWT_SECRET) as any;
+      const decoded = jwt.verify(adminToken, jwtSecret) as any;
       
       adminSession = {
         adminId: decoded.adminId,
@@ -114,14 +131,42 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
         databaseUrl: decoded.databaseUrl
       };
       
-      console.log('JWT extracted successfully:', {
+      console.log('JWT decoded successfully:', {
         adminId: adminSession.adminId,
         email: adminSession.email,
-        databaseId: adminSession.databaseId
+        databaseId: adminSession.databaseId,
+        hasDatabaseUrl: !!adminSession.databaseUrl
       });
+    } catch (jwtError) {
+      console.error('JWT verification failed:', jwtError);
+      return NextResponse.json(
+        { success: false, error: 'Invalid authentication token. Please log in again.' },
+        { status: 401 }
+      );
+    }
+    
+    // Validate required session data
+    if (!adminSession.adminId || !adminSession.databaseId) {
+      console.log('Invalid session data:', adminSession);
+      return NextResponse.json(
+        { success: false, error: 'Invalid session data. Please log in again.' },
+        { status: 401 }
+      );
     }
     
     console.log('Verifying database exists in master database...');
+    
+    // Test master database connection first
+    try {
+      await masterDb.$queryRaw`SELECT 1`;
+      console.log('Master database connection verified');
+    } catch (masterDbError) {
+      console.error('Master database connection failed:', masterDbError);
+      return NextResponse.json(
+        { success: false, error: 'Database service temporarily unavailable. Please try again.' },
+        { status: 503 }
+      );
+    }
     
     // Verify database exists in master database with timeout
     const databaseRecord = await Promise.race([
@@ -135,6 +180,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
           name: true,
           displayName: true,
           isActive: true,
+          databaseUrl: true, // Include database URL
           managedBy: {
             select: {
               id: true,
@@ -147,14 +193,14 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
         }
       }),
       new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Database query timeout')), 10000)
+        setTimeout(() => reject(new Error('Database query timeout')), 15000)
       )
     ]) as any;
 
     if (!databaseRecord) {
       console.log('Database record not found in master database:', adminSession.databaseId);
       return NextResponse.json(
-        { success: false, error: 'Database configuration not found' },
+        { success: false, error: 'Database configuration not found. Please contact support.' },
         { status: 404 }
       );
     }
@@ -162,19 +208,52 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
     console.log('Database record found in master:', {
       id: databaseRecord.id,
       name: databaseRecord.name,
-      isActive: databaseRecord.isActive
+      isActive: databaseRecord.isActive,
+      hasDatabaseUrl: !!databaseRecord.databaseUrl
     });
     
-    // Get database connection to admin's own database using the URL from JWT
+    // Use database URL from database record if not in session
+    const effectiveDatabaseUrl = adminSession.databaseUrl || databaseRecord.databaseUrl;
+    
+    if (!effectiveDatabaseUrl) {
+      console.log('No database URL available');
+      return NextResponse.json(
+        { success: false, error: 'Database configuration incomplete. Please contact support.' },
+        { status: 500 }
+      );
+    }
+    
+    // Get database connection to admin's own database
     console.log('Connecting to admin database...');
-    const { db } = await getAdminDatabaseConnection({
-      databaseId: adminSession.databaseId,
-      databaseUrl: adminSession.databaseUrl
-    });
+    let db;
+    try {
+      const connection = await getAdminDatabaseConnection({
+        databaseId: adminSession.databaseId,
+        databaseUrl: effectiveDatabaseUrl
+      });
+      db = connection.db;
+      console.log('Connected to admin database successfully');
+    } catch (connectionError) {
+      console.error('Failed to connect to admin database:', connectionError);
+      return NextResponse.json(
+        { success: false, error: 'Unable to connect to your database. Please try again.' },
+        { status: 503 }
+      );
+    }
 
-    console.log('Connected to admin database successfully');
+    // Test admin database connection
+    try {
+      await db.$queryRaw`SELECT 1`;
+      console.log('Admin database connection verified');
+    } catch (testError) {
+      console.error('Admin database test query failed:', testError);
+      return NextResponse.json(
+        { success: false, error: 'Database connection unstable. Please try again.' },
+        { status: 503 }
+      );
+    }
 
-    // Get admin details from their own database (this should work now)
+    // Get admin details from their own database
     const adminDetails = await db.admin.findUnique({
       where: { id: adminSession.adminId },
       select: {
@@ -186,6 +265,9 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
         isActive: true,
         createdAt: true
       }
+    }).catch(err => {
+      console.error('Failed to fetch admin details:', err);
+      return null;
     });
 
     console.log('Admin details from own database:', {
@@ -196,7 +278,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
     if (!adminDetails) {
       console.log('Error: Admin not found in their own database');
       return NextResponse.json(
-        { success: false, error: 'Admin not found in target database' },
+        { success: false, error: 'Admin account not found. Please contact support.' },
         { status: 404 }
       );
     }
@@ -204,7 +286,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
     if (!adminDetails.isActive) {
       console.log('Error: Admin account is not active');
       return NextResponse.json(
-        { success: false, error: 'Admin account is not active' },
+        { success: false, error: 'Admin account is not active. Please contact support.' },
         { status: 403 }
       );
     }
@@ -227,7 +309,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
         createdAt: true
       }
     }).catch(err => {
-      console.log('Admin user not found in beeusers table:', err.message);
+      console.log('Admin user not found in beeusers table (this is normal):', err.message);
       return null;
     });
 
@@ -237,44 +319,35 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
       isConfirmed: adminUser?.isConfirmed
     });
 
-    // Fetch dashboard statistics from admin's database with error handling
+    // Fetch dashboard statistics with better error handling
     console.log('Fetching dashboard statistics...');
-    const [
-      totalUsers,
-      totalBatches,
-      totalCertifications,
-      totalApiaries,
-      activeUsers,
-      pendingUsers,
-      recentUsers,
-      recentBatches,
-      recentCertifications
-    ] = await Promise.allSettled([
+    
+    const queries = [
       // Stats queries - All filtered by databaseId
-      db.beeusers.count({
+      () => db.beeusers.count({
         where: { databaseId: adminSession.databaseId }
       }),
       
-      db.batch.count({
+      () => db.batch.count({
         where: { databaseId: adminSession.databaseId }
       }),
       
-      db.certification.count({
+      () => db.certification.count({
         where: { databaseId: adminSession.databaseId }
       }),
       
-      db.apiary.count({
+      () => db.apiary.count({
         where: { databaseId: adminSession.databaseId }
       }),
       
-      db.beeusers.count({
+      () => db.beeusers.count({
         where: {
           databaseId: adminSession.databaseId,
           isConfirmed: true
         }
       }),
       
-      db.beeusers.count({
+      () => db.beeusers.count({
         where: {
           databaseId: adminSession.databaseId,
           isConfirmed: false
@@ -282,7 +355,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
       }),
       
       // Recent activity queries - All filtered by databaseId
-      db.beeusers.findMany({
+      () => db.beeusers.findMany({
         where: { databaseId: adminSession.databaseId },
         take: 10,
         orderBy: {
@@ -298,7 +371,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
         }
       }),
       
-      db.batch.findMany({
+      () => db.batch.findMany({
         where: { databaseId: adminSession.databaseId },
         take: 10,
         orderBy: {
@@ -319,7 +392,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
         }
       }),
       
-      db.certification.findMany({
+      () => db.certification.findMany({
         where: { databaseId: adminSession.databaseId },
         take: 10,
         orderBy: {
@@ -339,7 +412,19 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
           }
         }
       })
-    ]);
+    ];
+
+    // Execute queries with individual error handling
+    const results = await Promise.allSettled(
+      queries.map(async (query, index) => {
+        try {
+          return await query();
+        } catch (error) {
+          console.error(`Query ${index} failed:`, error);
+          throw error;
+        }
+      })
+    );
 
     // Extract results with fallbacks
     const extractResult = (result: PromiseSettledResult<any>, fallback: any = 0) => {
@@ -350,6 +435,18 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
         return fallback;
       }
     };
+
+    const [
+      totalUsers,
+      totalBatches,
+      totalCertifications,
+      totalApiaries,
+      activeUsers,
+      pendingUsers,
+      recentUsers,
+      recentBatches,
+      recentCertifications
+    ] = results;
 
     const statsData = {
       totalUsers: extractResult(totalUsers),
@@ -425,14 +522,14 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
     if (error instanceof Error) {
       console.error('Error details:', {
         message: error.message,
-        stack: error.stack
+        stack: error.stack?.split('\n').slice(0, 5).join('\n') // Limit stack trace
       });
       
       // Handle Prisma connection errors specifically
       if (error.message.includes('too many clients already') ||
           error.message.includes('connection pool') ||
           error.message.includes('FATAL: sorry, too many clients')) {
-      return NextResponse.json(
+        return NextResponse.json(
           { 
             success: false, 
             error: 'Database connection limit reached. Please try again in a moment.' 
@@ -444,13 +541,28 @@ export async function GET(request: NextRequest): Promise<NextResponse<DashboardD
       // Handle authentication errors
       if (error.message.includes('jwt') || 
           error.message.includes('token') ||
-          error.message.includes('authentication')) {
+          error.message.includes('authentication') ||
+          error.message.includes('JsonWebTokenError') ||
+          error.message.includes('TokenExpiredError')) {
         return NextResponse.json(
           { 
             success: false, 
             error: 'Authentication failed. Please log in again.' 
           },
           { status: 401 }
+        );
+      }
+      
+      // Handle database authentication errors
+      if (error.message.includes('authentication failed') ||
+          error.message.includes('database credentials') ||
+          error.message.includes('not valid')) {
+        return NextResponse.json(
+          { 
+            success: false, 
+            error: 'Database authentication failed. Please contact support.' 
+          },
+          { status: 503 }
         );
       }
       
