@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
 
 interface TokenStats {
@@ -67,7 +67,6 @@ const getTokenFromStorage = (): string | null => {
   return null;
 };
 
-
 const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({ 
   batches = [],
   tokenBalance = 0
@@ -85,32 +84,34 @@ const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   
+  // Initialize auth token
   useEffect(() => {
-  const token = getTokenFromStorage();
-  if (token) {
-    setAuthToken(token);
-    setIsAuthenticated(true);
-  } else {
-    setIsAuthenticated(false);
-  }
-}, []);
+    const token = getTokenFromStorage();
+    console.log('TokenWallet: Retrieved token:', token ? 'exists' : 'missing');
+    if (token) {
+      setAuthToken(token);
+      setIsAuthenticated(true);
+    } else {
+      setIsAuthenticated(false);
+    }
+  }, []);
 
-   // Get authentication headers
-  const getAuthHeaders = (): Record<string, string> => {
-  const token = authToken || getTokenFromStorage();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  
-  return headers;
-};
+  // Get authentication headers
+  const getAuthHeaders = useCallback((): Record<string, string> => {
+    const token = authToken || getTokenFromStorage();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    
+    return headers;
+  }, [authToken]);
 
   // Fetch token stats from backend
-  const fetchTokenStats = async () => {
+  const fetchTokenStats = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -124,23 +125,32 @@ const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({
         return;
       }
       
+      console.log('TokenWallet: Fetching token stats with token:', token.substring(0, 20) + '...');
+      
       const response = await fetch('/api/token-stats/update', {
-        headers: getAuthHeaders()
+        method: 'GET',
+        headers: getAuthHeaders(),
+        cache: 'no-store' // Force fresh data
       });
+      
+      console.log('TokenWallet: Response status:', response.status);
       
       if (!response.ok) {
         if (response.status === 401) {
           setIsAuthenticated(false);
           throw new Error('Authentication required. Please log in.');
         }
+        const errorText = await response.text();
+        console.error('TokenWallet: API Error:', errorText);
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       
       const data = await response.json();
+      console.log('TokenWallet: Received data:', data);
       setTokenStats(data);
       setIsAuthenticated(true);
     } catch (error) {
-      console.error('Failed to fetch token stats', error);
+      console.error('TokenWallet: Failed to fetch token stats', error);
       setError(error instanceof Error ? error.message : 'Failed to fetch token stats');
       
       // Fallback to default values
@@ -155,25 +165,33 @@ const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [authToken, getAuthHeaders]);
 
-  // Initial fetch
+  // Initial fetch when auth token changes
   useEffect(() => {
-    fetchTokenStats();
-  }, []);
+    if (authToken) {
+      console.log('TokenWallet: Auth token changed, fetching stats');
+      fetchTokenStats();
+    }
+  }, [authToken, fetchTokenStats]);
 
-  // Handle batch events
+  // Handle batch events with proper dependencies
   useEffect(() => {
-    const handleBatchEvent = () => fetchTokenStats();
+    const handleBatchEvent = (event: any) => {
+      console.log('TokenWallet: Batch event received:', event.type);
+      fetchTokenStats();
+    };
 
     window.addEventListener('batchCompleted', handleBatchEvent);
     window.addEventListener('batchRollback', handleBatchEvent);
+    window.addEventListener('tokenStatsUpdated', handleBatchEvent); // Add this custom event
 
     return () => {
       window.removeEventListener('batchCompleted', handleBatchEvent);
       window.removeEventListener('batchRollback', handleBatchEvent);
+      window.removeEventListener('tokenStatsUpdated', handleBatchEvent);
     };
-  }, []);
+  }, [fetchTokenStats]);
 
   // Calculate pending tokens
   useEffect(() => {
@@ -188,14 +206,29 @@ const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({
       return acc;
     }, { originOnly: 0, qualityOnly: 0, bothCertifications: 0 });
 
+    console.log('TokenWallet: Calculated pending tokens:', pending);
     setPendingTokens(pending);
   }, [batches]);
+
+  // Add refresh button functionality
+  const handleRefresh = () => {
+    console.log('TokenWallet: Manual refresh triggered');
+    fetchTokenStats();
+  };
 
   // Loading state
   if (loading) {
     return (
       <div className="bg-white p-4 rounded-lg shadow text-black">
-        <h2 className="text-lg font-semibold mb-4">Token Wallet Overview</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold">Token Wallet Overview</h2>
+          <button 
+            onClick={handleRefresh}
+            className="px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600"
+          >
+            Refresh
+          </button>
+        </div>
         <div className="flex items-center justify-center h-32">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
           <span className="ml-2 text-gray-600">Loading token statistics...</span>
@@ -208,7 +241,15 @@ const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({
   if (error) {
     return (
       <div className="bg-white p-4 rounded-lg shadow text-black">
-        <h2 className="text-lg font-semibold mb-4">Token Wallet Overview</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold">Token Wallet Overview</h2>
+          <button 
+            onClick={handleRefresh}
+            className="px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600"
+          >
+            Refresh
+          </button>
+        </div>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <div className="flex items-center mb-2">
             <div className="h-4 w-4 bg-red-500 rounded-full mr-2"></div>
@@ -240,9 +281,27 @@ const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({
   // Use the remainingTokens from the database, subtract pending tokens
   const availableTokens = Math.max(0, tokenStats.remainingTokens - totalPendingTokens);
 
+  console.log('TokenWallet: Rendering with stats:', {
+    totalTokens: tokenStats.totalTokens,
+    remainingTokens: tokenStats.remainingTokens,
+    totalUsedTokens,
+    totalPendingTokens,
+    availableTokens
+  });
+
   return (
     <div className="bg-white p-4 rounded-lg shadow text-black">
-      <h2 className="text-lg font-semibold mb-4">Token Wallet Overview</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold">Token Wallet Overview</h2>
+        <button 
+          onClick={handleRefresh}
+          className="px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600"
+        >
+          Refresh
+        </button>
+      </div>
+      
+     
       
       {/* Token Usage Section */}
       <div className="border rounded-lg p-4 bg-gray-50">
@@ -283,7 +342,7 @@ const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({
             )}
           </div>
           
-          {/* Total Used - CHANGED FROM BOTH CERTIFICATIONS */}
+          {/* Total Used */}
           <div className="p-3 bg-white rounded-lg shadow">
             <div className="flex items-center mb-1">
               <div className="h-3 w-3 rounded-full bg-yellow-500 mr-2"></div>
@@ -306,7 +365,7 @@ const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({
               <div className="h-3 w-3 rounded-full bg-gray-400 mr-2"></div>
               <p className="text-sm font-medium">Available</p>
             </div>
-            <p className="text-xl font-bold">{availableTokens}</p>
+            <p className="text-xl font-bold text-green-600">{availableTokens}</p>
             <p className="text-xs text-gray-500">tokens remaining</p>
             {totalPendingTokens > 0 && (
               <p className="text-xs text-orange-500">
@@ -318,9 +377,6 @@ const TokenWalletOverview: React.FC<TokenWalletOverviewProps> = ({
         
         {/* Usage Summary */}
         <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-          <div className="flex justify-between items-center">
-           
-          </div>
           <div className="flex justify-between items-center mt-1">
             <span className="text-sm text-yellow-700">Usage Rate:</span>
             <span className="text-sm font-medium text-yellow-900">

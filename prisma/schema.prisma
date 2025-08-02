@@ -20,7 +20,7 @@ model Admin {
   updatedAt   DateTime @updatedAt @map("updated_at")
   lastLoginAt DateTime? @map("last_login_at")
   
-  // Relations - Changed to one-to-one relationship
+  // Relations - One-to-one relationship with database
   managedDatabase Database? // Each admin can manage only one database
   adminSessions   AdminSession[]
 
@@ -39,7 +39,7 @@ model Database {
   updatedAt    DateTime @updatedAt @map("updated_at")
   
   // Admin who created and manages this database - One-to-one relationship
-  managedById  Int      @unique @map("managed_by_id") // Added @unique constraint
+  managedById  Int      @unique @map("managed_by_id")
   managedBy    Admin    @relation(fields: [managedById], references: [id])
   
   // Database configuration
@@ -47,7 +47,6 @@ model Database {
   maxStorage   Float?   @default(10.0) @map("max_storage_gb") // in GB
   
   // Relations to database-specific data
-  users        beeusers[]
   batches      Batch[]
   tokenStats   TokenStats[]
   apiaries     Apiary[]
@@ -55,6 +54,7 @@ model Database {
   accounts     Account[]
   sessions     Session[]
   verificationTokens VerificationToken[]
+  beeusers     beeusers[] // Add relation to beeusers
   
   @@unique([name])
   @@map("databases")
@@ -72,7 +72,7 @@ model AdminSession {
   @@map("admin_sessions")
 }
 
-// Original user table with required database reference
+// User table with required database reference
 model beeusers {
   id                Int             @id @default(autoincrement()) @map("id")
   firstname         String          @map("firstname")
@@ -93,7 +93,11 @@ model beeusers {
   premiumStartedAt  DateTime?       @map("premium_started_at")
   role              String          @default("employee")
   
-  // Database association - Required field (not optional)
+  // New field to identify if this user is also an admin
+  isAdmin           Boolean         @default(false) @map("is_admin")
+  adminId           Int?            @map("admin_id") // Reference to admin table (no foreign key constraint for flexibility)
+  
+  // Database association - Required field
   databaseId        String          @map("database_id")
   database          Database        @relation(fields: [databaseId], references: [id])
   
@@ -237,7 +241,7 @@ model Account {
   
   user              beeusers @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([provider, providerAccountId, databaseId]) // Updated unique constraint
+  @@unique([provider, providerAccountId, databaseId])
 }
 
 model Session {
@@ -265,5 +269,5 @@ model VerificationToken {
   databaseId String   @map("database_id")
   database   Database @relation(fields: [databaseId], references: [id])
 
-  @@unique([identifier, token, databaseId]) // Updated unique constraint
+  @@unique([identifier, token, databaseId])
 }

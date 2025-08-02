@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
 import { authenticateRequest } from "@/lib/auth";
-
-const prisma = new PrismaClient();
+import { getPrismaClientByDatabaseId } from "@/lib/prisma-manager";
 
 // =======================
 // ✅ GET: Fetch token stats
@@ -20,25 +18,79 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
-    // Extract userId and databaseId from the auth result object
+    // Extract userId and databaseId from the auth result
     const { userId, databaseId } = authResult;
+    console.log(`[${requestId}] ▶ Authenticated user ID:`, userId, 'Database ID:', databaseId);
 
-    const userIdInt = parseInt(userId);
-    if (isNaN(userIdInt)) {
-      console.log(`❌ [${requestId}] Invalid user ID format`);
-      return NextResponse.json({ error: "Invalid user ID format" }, { status: 400 });
+    // Get the correct databaseId from JWT and extract user email
+    const token = request.headers.get('authorization')?.replace('Bearer ', '');
+    let finalDatabaseId = databaseId;
+    let userEmail = null;
+    
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const payload = jwt.decode(token);
+        if (payload && payload.databaseId) {
+          finalDatabaseId = payload.databaseId;
+          userEmail = payload.email;
+          console.log(`[${requestId}] ▶ Using JWT databaseId:`, finalDatabaseId, 'email:', userEmail);
+        }
+      } catch (error) {
+        console.warn(`[${requestId}] ▶ Could not decode JWT for databaseId fix`);
+      }
     }
 
-    console.log(`✅ [${requestId}] User authenticated: ${userIdInt}`);
+    if (!userEmail) {
+      console.error(`[${requestId}] ▶ No user email found in JWT`);
+      return NextResponse.json(
+        { error: "Invalid authentication token" },
+        { status: 401 }
+      );
+    }
 
-    const tokenStats = await prisma.tokenStats.findUnique({
-      where: { userId: userIdInt }
+    // Get Prisma client for the specific database
+    const prisma = await getPrismaClientByDatabaseId(finalDatabaseId);
+    
+    if (!prisma) {
+      console.error(`[${requestId}] ▶ Could not get Prisma client for databaseId:`, finalDatabaseId);
+      return NextResponse.json(
+        { error: "Database configuration not found" },
+        { status: 404 }
+      );
+    }
+
+    console.log(`[${requestId}] ▶ Using database ID:`, finalDatabaseId);
+
+    // FIND THE CORRECT USER ID IN THE TARGET DATABASE
+    const userInTargetDb = await prisma.beeusers.findFirst({
+      where: { 
+        email: userEmail
+      }
+    });
+
+    if (!userInTargetDb) {
+      console.error(`[${requestId}] ▶ User not found in target database:`, finalDatabaseId);
+      return NextResponse.json(
+        { error: "User not found in target database. Please contact support." },
+        { status: 404 }
+      );
+    }
+
+    const targetUserId = userInTargetDb.id;
+    console.log(`[${requestId}] ▶ Using target database user ID:`, targetUserId);
+
+    const tokenStats = await prisma.tokenStats.findFirst({
+      where: { 
+        userId: targetUserId,
+        databaseId: finalDatabaseId
+      }
     });
 
     if (!tokenStats) {
       console.log(`📊 [${requestId}] No token stats found, returning defaults`);
       return NextResponse.json({
-        userId: userIdInt,
+        userId: targetUserId,
         totalTokens: 0,
         remainingTokens: 0,
         originOnly: 0,
@@ -69,12 +121,23 @@ export async function GET(request: NextRequest) {
 
   } catch (error) {
     console.error(`❌ [${requestId}] FATAL GET ERROR:`, error);
+    
+    // Handle Prisma foreign key constraint errors
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'P2003') {
+      return NextResponse.json(
+        {
+          error: 'Database reference error. Please contact support.',
+          details: 'Foreign key constraint violation',
+        },
+        { status: 400 }
+      );
+    }
+    
     return NextResponse.json(
       { error: "Failed to fetch token stats", details: (error as Error).message },
       { status: 500 }
     );
   } finally {
-    await prisma.$disconnect();
     console.log(`🏁 [${requestId}] GET request completed`);
   }
 }
@@ -95,16 +158,67 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
-    // Extract userId and databaseId from the auth result object
+    // Extract userId and databaseId from the auth result
     const { userId, databaseId } = authResult;
+    console.log(`[${requestId}] ▶ Authenticated user ID:`, userId, 'Database ID:', databaseId);
 
-    const userIdInt = parseInt(userId);
-    if (isNaN(userIdInt)) {
-      console.log(`❌ [${requestId}] Invalid user ID format`);
-      return NextResponse.json({ error: "Invalid user ID format" }, { status: 400 });
+    // Get the correct databaseId from JWT and extract user email
+    const token = request.headers.get('authorization')?.replace('Bearer ', '');
+    let finalDatabaseId = databaseId;
+    let userEmail = null;
+    
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const payload = jwt.decode(token);
+        if (payload && payload.databaseId) {
+          finalDatabaseId = payload.databaseId;
+          userEmail = payload.email;
+          console.log(`[${requestId}] ▶ Using JWT databaseId:`, finalDatabaseId, 'email:', userEmail);
+        }
+      } catch (error) {
+        console.warn(`[${requestId}] ▶ Could not decode JWT for databaseId fix`);
+      }
     }
 
-    console.log(`✅ [${requestId}] User authenticated: ${userIdInt}`);
+    if (!userEmail) {
+      console.error(`[${requestId}] ▶ No user email found in JWT`);
+      return NextResponse.json(
+        { error: "Invalid authentication token" },
+        { status: 401 }
+      );
+    }
+
+    // Get Prisma client for the specific database
+    const prisma = await getPrismaClientByDatabaseId(finalDatabaseId);
+    
+    if (!prisma) {
+      console.error(`[${requestId}] ▶ Could not get Prisma client for databaseId:`, finalDatabaseId);
+      return NextResponse.json(
+        { error: "Database configuration not found" },
+        { status: 404 }
+      );
+    }
+
+    console.log(`[${requestId}] ▶ Using database ID:`, finalDatabaseId);
+
+    // FIND THE CORRECT USER ID IN THE TARGET DATABASE
+    const userInTargetDb = await prisma.beeusers.findFirst({
+      where: { 
+        email: userEmail
+      }
+    });
+
+    if (!userInTargetDb) {
+      console.error(`[${requestId}] ▶ User not found in target database:`, finalDatabaseId);
+      return NextResponse.json(
+        { error: "User not found in target database. Please contact support." },
+        { status: 404 }
+      );
+    }
+
+    const targetUserId = userInTargetDb.id;
+    console.log(`[${requestId}] ▶ Using target database user ID:`, targetUserId);
 
     const body = await request.json();
     console.log(`📥 [${requestId}] Raw body:`, body);
@@ -121,12 +235,14 @@ export async function POST(request: NextRequest) {
     const safeBothCertifications = Math.max(0, bothCertificationsInt);
     const safeTokensUsed = Math.max(0, tokensUsedInt);
 
+    console.log(`📊 [${requestId}] Token breakdown validated: OriginOnly=${safeOriginOnly}, QualityOnly=${safeQualityOnly}, Both=${safeBothCertifications}, Total=${safeTokensUsed}`);
     
-
-console.log(`📊 [${requestId}] Token breakdown validated: OriginOnly=${safeOriginOnly}, QualityOnly=${safeQualityOnly}, Both=${safeBothCertifications}, Total=${safeTokensUsed}`);
     // ✅ FIXED: Get current token balance from database or user's actual balance
-    const existingStats = await prisma.tokenStats.findUnique({
-      where: { userId: userIdInt }
+    const existingStats = await prisma.tokenStats.findFirst({
+      where: { 
+        userId: targetUserId,
+        databaseId: finalDatabaseId
+      }
     });
 
     let updatedTokenStats;
@@ -145,7 +261,9 @@ console.log(`📊 [${requestId}] Token breakdown validated: OriginOnly=${safeOri
 
       // ✅ FIXED: Update stats and deduct tokens from remaining balance
       updatedTokenStats = await prisma.tokenStats.update({
-        where: { userId: userIdInt },
+        where: { 
+          id: existingStats.id // Use unique ID for update
+        },
         data: {
           originOnly: existingStats.originOnly + safeOriginOnly,
           qualityOnly: existingStats.qualityOnly + safeQualityOnly,
@@ -162,12 +280,9 @@ console.log(`📊 [${requestId}] Token breakdown validated: OriginOnly=${safeOri
 
     } else {
       // ✅ FIXED: For new users, you need to fetch their actual token balance
-      // This should come from your user's token balance table or system
-      // For now, I'll assume you have a way to get the user's purchased token balance
-      
       // You might need to query a separate TokenBalance table or User table
-      // const userTokenBalance = await prisma.user.findUnique({
-      //   where: { id: userIdInt },
+      // const userTokenBalance = await prisma.beeusers.findUnique({
+      //   where: { id: targetUserId },
       //   select: { tokenBalance: true }
       // });
       
@@ -185,8 +300,8 @@ console.log(`📊 [${requestId}] Token breakdown validated: OriginOnly=${safeOri
       // ✅ FIXED: Create new stats with actual token balance
       updatedTokenStats = await prisma.tokenStats.create({
         data: {
-          userId: userIdInt,
-          databaseId: databaseId, // Include the required databaseId field
+          userId: targetUserId,
+          databaseId: finalDatabaseId, // Use the correct databaseId
           totalTokens: actualTokenBalance,
           remainingTokens: actualTokenBalance - safeTokensUsed,
           originOnly: safeOriginOnly,
@@ -207,7 +322,7 @@ console.log(`📊 [${requestId}] Token breakdown validated: OriginOnly=${safeOri
       
       // ✅ FIXED: Auto-correct the remaining tokens if there's a mismatch
       updatedTokenStats = await prisma.tokenStats.update({
-        where: { userId: userIdInt },
+        where: { id: updatedTokenStats.id },
         data: {
           remainingTokens: expectedRemaining
         }
@@ -238,9 +353,23 @@ console.log(`📊 [${requestId}] Token breakdown validated: OriginOnly=${safeOri
 
   } catch (error) {
     console.error(`❌ [${requestId}] FATAL POST ERROR:`, error);
-    return NextResponse.json({ error: "Failed to update token stats", details: (error as Error).message }, { status: 500 });
+    
+    // Handle Prisma foreign key constraint errors
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'P2003') {
+      return NextResponse.json(
+        {
+          error: 'Database reference error. Please contact support.',
+          details: 'Foreign key constraint violation',
+        },
+        { status: 400 }
+      );
+    }
+    
+    return NextResponse.json(
+      { error: "Failed to update token stats", details: (error as Error).message }, 
+      { status: 500 }
+    );
   } finally {
-    await prisma.$disconnect();
     console.log(`🏁 [${requestId}] POST request completed`);
   }
 }

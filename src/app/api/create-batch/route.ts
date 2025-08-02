@@ -1,8 +1,6 @@
 import { NextResponse, NextRequest } from 'next/server';
-import { PrismaClient, Prisma } from '@prisma/client';
-import { getUserFromToken } from '@/lib/auth';
-
-const prisma = new PrismaClient();
+import { authenticateRequest } from "@/lib/auth";
+import { getPrismaClientByDatabaseId } from "@/lib/prisma-manager";
 
 // UPDATED Type definitions to match the actual frontend structure
 interface ApiaryObject {
@@ -24,38 +22,86 @@ interface BatchRequestBody {
 }
 
 // GET: Fetch batches for logged-in user
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
-    const authHeaderRaw = request.headers.get('Authorization');
-    if (!authHeaderRaw) {
-      return new Response(JSON.stringify({ error: 'Authentication required' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    // Get the authenticated user data
+    const authResult = await authenticateRequest(request);
+        
+    if (!authResult) {
+      console.warn('[GET /api/create-batch] ▶ No authenticated user found');
+      return NextResponse.json(
+        { error: "Authentication required" },
+        { status: 401 }
+      );
     }
 
-    const token = authHeaderRaw.startsWith('Bearer ') ? authHeaderRaw.slice(7).trim() : null;
-    console.log('[GET] Token received for verification:', token);
+    // Extract userId and databaseId from the auth result
+    const { userId, databaseId } = authResult;
+    console.log('[GET /api/create-batch] ▶ Authenticated user ID:', userId, 'Database ID:', databaseId);
 
-    if (!token) {
-      return NextResponse.json({ message: 'Unauthorized: No token provided' }, { status: 401 });
+    // Get the correct databaseId from JWT and extract user email
+    const token = request.headers.get('authorization')?.replace('Bearer ', '');
+    let finalDatabaseId = databaseId;
+    let userEmail = null;
+    
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const payload = jwt.decode(token);
+        if (payload && payload.databaseId) {
+          finalDatabaseId = payload.databaseId;
+          userEmail = payload.email;
+          console.log('[GET /api/create-batch] ▶ Using JWT databaseId:', finalDatabaseId, 'email:', userEmail);
+        }
+      } catch (error) {
+        console.warn('[GET /api/create-batch] ▶ Could not decode JWT for databaseId fix');
+      }
     }
 
-    const user = await getUserFromToken(token);
-    if (!user) {
-      return NextResponse.json({ message: 'Unauthorized: Invalid token' }, { status: 401 });
+    if (!userEmail) {
+      console.error('[GET /api/create-batch] ▶ No user email found in JWT');
+      return NextResponse.json(
+        { error: "Invalid authentication token" },
+        { status: 401 }
+      );
     }
 
-    // FIXED: Use userId instead of user.id
-    const userId = parseInt(user.userId);
-    if (!userId) {
-      return NextResponse.json({ message: 'Invalid user identifier' }, { status: 401 });
+    // Get Prisma client for the specific database
+    const prisma = await getPrismaClientByDatabaseId(finalDatabaseId);
+    
+    if (!prisma) {
+      console.error('[GET /api/create-batch] ▶ Could not get Prisma client for databaseId:', finalDatabaseId);
+      return NextResponse.json(
+        { error: "Database configuration not found" },
+        { status: 404 }
+      );
     }
+
+    console.log('[GET /api/create-batch] ▶ Using database ID:', finalDatabaseId);
+
+    // FIND THE CORRECT USER ID IN THE TARGET DATABASE
+    // The user might have different IDs in different databases
+    const userInTargetDb = await prisma.beeusers.findFirst({
+      where: { 
+        email: userEmail
+      }
+    });
+
+    if (!userInTargetDb) {
+      console.error('[GET /api/create-batch] ▶ User not found in target database:', finalDatabaseId);
+      return NextResponse.json(
+        { error: "User not found in target database. Please contact support." },
+        { status: 404 }
+      );
+    }
+
+    const targetUserId = userInTargetDb.id;
+    console.log('[GET /api/create-batch] ▶ Using target database user ID:', targetUserId);
 
     const batches = await prisma.batch.findMany({
       where: { 
-        userId: userId,
-        databaseId: user.databaseId // Add database filter
+        userId: targetUserId,
+        databaseId: finalDatabaseId // Add database filter
       },
       orderBy: { createdAt: 'desc' },
       include: { apiaries: true },
@@ -82,53 +128,92 @@ export async function GET(request: Request) {
     });
 
   } catch (error) {
-    console.error('[GET] Error fetching batches:', error);
+    console.error('[GET /api/create-batch] Error fetching batches:', error);
     return NextResponse.json({ message: 'An error occurred while fetching batches' }, { status: 500 });
-  } finally {
-    await prisma.$disconnect();
   }
 }
 
 // FIXED POST: Handle the actual frontend data structure
 export async function POST(request: NextRequest) {
   try {
-    const authHeader = request.headers.get('Authorization');
-    const token = authHeader?.replace('Bearer ', '').trim();
-
-    console.log('[POST] Raw auth header:', authHeader);
-    console.log('[POST] Extracted token:', token);
-
-    if (!token) {
-      return NextResponse.json({ message: 'Unauthorized: No token provided' }, { status: 401 });
+    // Get the authenticated user data
+    const authResult = await authenticateRequest(request);
+        
+    if (!authResult) {
+      return NextResponse.json(
+        { error: "Authentication required" },
+        { status: 401 }
+      );
     }
 
-    const user = await getUserFromToken(token);
-    console.log('[POST] user returned:', user);
+    // Extract userId and databaseId from the auth result
+    const { userId, databaseId } = authResult;
+    console.log('[POST /api/create-batch] ▶ Authenticated user ID:', userId, 'Database ID:', databaseId);
 
-    if (!user) {
-      return NextResponse.json({ message: 'Unauthorized: Invalid token' }, { status: 401 });
-    }
-
-    // FIXED: Use userId from the returned object and convert to integer
-    const userId = parseInt(user.userId);
-    const databaseId = user.databaseId;
+    // Get the correct databaseId from JWT and extract user email
+    const token = request.headers.get('authorization')?.replace('Bearer ', '');
+    let finalDatabaseId = databaseId;
+    let userEmail = null;
     
-    if (!userId) {
-      return NextResponse.json({ message: 'Invalid user identifier' }, { status: 401 });
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const payload = jwt.decode(token);
+        if (payload && payload.databaseId) {
+          finalDatabaseId = payload.databaseId;
+          userEmail = payload.email;
+          console.log('[POST /api/create-batch] ▶ Using JWT databaseId:', finalDatabaseId, 'email:', userEmail);
+        }
+      } catch (error) {
+        console.warn('[POST /api/create-batch] ▶ Could not decode JWT for databaseId fix');
+      }
     }
 
-    if (!databaseId) {
-      return NextResponse.json({ message: 'Invalid database identifier' }, { status: 401 });
+    if (!userEmail) {
+      console.error('[POST /api/create-batch] ▶ No user email found in JWT');
+      return NextResponse.json(
+        { error: "Invalid authentication token" },
+        { status: 401 }
+      );
     }
 
-    console.log('[POST] Final userId for query:', userId);
-    console.log('[POST] Final databaseId for query:', databaseId);
+    // Get Prisma client for the specific database
+    const prisma = await getPrismaClientByDatabaseId(finalDatabaseId);
+    
+    if (!prisma) {
+      console.error('[POST /api/create-batch] ▶ Could not get Prisma client for databaseId:', finalDatabaseId);
+      return NextResponse.json(
+        { error: "Database configuration not found" },
+        { status: 404 }
+      );
+    }
+
+    console.log('[POST /api/create-batch] ▶ Using database ID:', finalDatabaseId);
+
+    // FIND THE CORRECT USER ID IN THE TARGET DATABASE
+    // The user might have different IDs in different databases
+    const userInTargetDb = await prisma.beeusers.findFirst({
+      where: { 
+        email: userEmail
+      }
+    });
+
+    if (!userInTargetDb) {
+      console.error('[POST /api/create-batch] ▶ User not found in target database:', finalDatabaseId);
+      return NextResponse.json(
+        { error: "User not found in target database. Please contact support." },
+        { status: 404 }
+      );
+    }
+
+    const targetUserId = userInTargetDb.id;
+    console.log('[POST /api/create-batch] ▶ Using target database user ID:', targetUserId);
 
     const body = await request.json();
     // FIXED: Changed totalHoney to totalKg to match frontend
     const { batchNumber, batchName, apiaries = [], totalHives, totalKg } = body;
 
-    console.log('[POST] Request body:', body);
+    console.log('[POST /api/create-batch] ▶ Request body:', body);
 
     if (!batchNumber) {
       return NextResponse.json({ message: 'Batch number is required' }, { status: 400 });
@@ -154,8 +239,8 @@ export async function POST(request: NextRequest) {
       const existingApiary = await prisma.apiary.findFirst({
         where: { 
           id: apiary.id,
-          userId: userId,
-          databaseId: databaseId // Add database filter
+          userId: targetUserId,
+          databaseId: finalDatabaseId // Add database filter
         }
       });
       
@@ -172,8 +257,8 @@ export async function POST(request: NextRequest) {
     const existingBatch = await prisma.batch.findFirst({
       where: { 
         batchNumber, 
-        userId: userId,
-        databaseId: databaseId // Add database filter
+        userId: targetUserId,
+        databaseId: finalDatabaseId // Add database filter
       },
     });
 
@@ -184,8 +269,8 @@ export async function POST(request: NextRequest) {
     // STEP 1: Create the batch
     const batch = await prisma.batch.create({
       data: {
-        user: { connect: { id: userId } },
-        database: { connect: { id: databaseId } }, // Connect to database
+        user: { connect: { id: targetUserId } },
+        database: { connect: { id: finalDatabaseId } }, // Connect to database
         batchNumber,
         batchName: finalBatchName,
         containerType: 'Glass',
@@ -205,13 +290,13 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    console.log('[POST] Created batch:', batch);
+    console.log('[POST /api/create-batch] ▶ Created batch:', batch);
 
     // STEP 2: UPDATE existing apiaries with batch ID
     const updatedApiaries = [];
 
     for (const apiary of apiaries) {
-      console.log('[POST] Updating apiary with ID:', apiary.id);
+      console.log('[POST /api/create-batch] ▶ Updating apiary with ID:', apiary.id);
       
       // UPDATE the existing apiary record to link it to the batch
       const updatedApiary = await prisma.apiary.update({
@@ -223,10 +308,10 @@ export async function POST(request: NextRequest) {
       });
       
       updatedApiaries.push(updatedApiary);
-      console.log('[POST] Updated apiary:', updatedApiary);
+      console.log('[POST /api/create-batch] ▶ Updated apiary:', updatedApiary);
     }
 
-    console.log('[POST] All apiaries updated successfully');
+    console.log('[POST /api/create-batch] ▶ All apiaries updated successfully');
 
     // STEP 3: Return the complete batch with associated apiaries
     const completeBatch = await prisma.batch.findUnique({
@@ -237,14 +322,14 @@ export async function POST(request: NextRequest) {
     // Get updated list of all batches for the user in this database
     const batches = await prisma.batch.findMany({
       where: { 
-        userId: userId,
-        databaseId: databaseId // Add database filter
+        userId: targetUserId,
+        databaseId: finalDatabaseId // Add database filter
       },
       orderBy: { createdAt: 'desc' },
       include: { apiaries: true },
     });
 
-    console.log('[POST] Success - returning batch');
+    console.log('[POST /api/create-batch] ▶ Success - returning batch');
 
     return NextResponse.json({ 
       batch: completeBatch, 
@@ -254,13 +339,23 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
 
   } catch (error) {
-    console.error('[POST] Error creating batch:', error);
+    console.error('[POST /api/create-batch] Error creating batch:', error);
+    
+    // Handle Prisma foreign key constraint errors
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'P2003') {
+      return NextResponse.json(
+        {
+          message: 'Database reference error. Please contact support.',
+          error: 'Foreign key constraint violation',
+        },
+        { status: 400 }
+      );
+    }
+    
     const errorMessage = error instanceof Error ? error.message : 'Failed to create batch';
     return NextResponse.json({ 
       message: errorMessage,
       error: process.env.NODE_ENV === 'development' ? error : undefined 
     }, { status: 500 });
-  } finally {
-    await prisma.$disconnect();
   }
 }

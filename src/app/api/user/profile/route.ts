@@ -1,15 +1,15 @@
 // app/api/user/profile/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
 import { authenticateRequest } from "@/lib/auth";
+import { getPrismaClientByDatabaseId } from "@/lib/prisma-manager";
 import fs from 'fs';
 import path from 'path';
 
-const prisma = new PrismaClient();
-
 // GET - Get user profile (requires authentication)
 export async function GET(request: NextRequest) {
+  let prisma = null;
+  
   try {
     const authResult = await authenticateRequest(request);
     
@@ -45,6 +45,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(
         { error: "Database ID required" },
         { status: 400 }
+      );
+    }
+
+    // Get the appropriate Prisma client for this database
+    prisma = await getPrismaClientByDatabaseId(databaseId);
+    if (!prisma) {
+      return NextResponse.json(
+        { error: "Database connection failed" },
+        { status: 500 }
       );
     }
 
@@ -84,13 +93,14 @@ export async function GET(request: NextRequest) {
       { error: 'Failed to fetch profile' },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
+  // Note: No need to disconnect here as the Prisma manager handles connection pooling
 }
 
 // PUT - Update user profile (requires authentication)
 export async function PUT(request: NextRequest) {
+  let prisma = null;
+  
   try {
     const authResult = await authenticateRequest(request);
         
@@ -122,6 +132,15 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json(
         { error: "Database ID required" },
         { status: 400 }
+      );
+    }
+
+    // Get the appropriate Prisma client for this database
+    prisma = await getPrismaClientByDatabaseId(databaseId);
+    if (!prisma) {
+      return NextResponse.json(
+        { error: "Database connection failed" },
+        { status: 500 }
       );
     }
 
@@ -178,13 +197,14 @@ export async function PUT(request: NextRequest) {
       { error: 'Failed to update profile' },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
+  // Note: No need to disconnect here as the Prisma manager handles connection pooling
 }
 
 // POST - Update passport information with file upload (requires authentication)
 export async function POST(request: NextRequest) {
+  let prisma = null;
+  
   try {
     const authResult = await authenticateRequest(request);
         
@@ -216,6 +236,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "Database ID required" },
         { status: 400 }
+      );
+    }
+
+    // Get the appropriate Prisma client for this database
+    prisma = await getPrismaClientByDatabaseId(databaseId);
+    if (!prisma) {
+      return NextResponse.json(
+        { error: "Database connection failed" },
+        { status: 500 }
       );
     }
 
@@ -357,7 +386,6 @@ export async function POST(request: NextRequest) {
       },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
+  // Note: No need to disconnect here as the Prisma manager handles connection pooling
 }

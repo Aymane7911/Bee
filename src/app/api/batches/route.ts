@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { authenticateRequest } from "@/lib/auth";
-
-const prisma = new PrismaClient();
+import { getPrismaClientByDatabaseId } from "@/lib/prisma-manager";
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,6 +17,7 @@ export async function GET(request: NextRequest) {
 
     // Handle both string and object returns from authenticateRequest
     const userId = typeof authResult === 'string' ? authResult : authResult.userId;
+    const databaseId = typeof authResult === 'object' ? authResult.databaseId : null;
     const userIdInt = parseInt(userId);
         
     if (isNaN(userIdInt)) {
@@ -28,12 +28,42 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    if (!databaseId) {
+      console.error('[GET /api/batches] ▶ No database ID found in auth result');
+      return NextResponse.json(
+        { error: "Database ID not found" },
+        { status: 400 }
+      );
+    }
+
+    console.log(`[GET /api/batches] ▶ Fetching batches for user: ${userIdInt}, database: ${databaseId}`);
+
+    // Get the appropriate Prisma client for this tenant
+    const prisma = await getPrismaClientByDatabaseId(databaseId);
+    if (!prisma) {
+      console.error(`[GET /api/batches] ▶ Failed to get Prisma client for database: ${databaseId}`);
+      return NextResponse.json(
+        { error: "Database connection failed" },
+        { status: 500 }
+      );
+    }
+
     const batches = await prisma.batch.findMany({
       where: {
         userId: userIdInt,
       },
       include: {
-        apiaries: true,
+        apiaries: {
+          select: {
+            id: true,
+            name: true,
+            number: true,
+            hiveCount: true,
+            kilosCollected: true,
+            latitude: true,
+            longitude: true,
+          }
+        },
       },
       orderBy: {
         createdAt: "desc",
@@ -65,6 +95,7 @@ export async function POST(request: NextRequest) {
 
     // Handle both string and object returns from authenticateRequest
     const userId = typeof authResult === 'string' ? authResult : authResult.userId;
+    const databaseId = typeof authResult === 'object' ? authResult.databaseId : null;
     const userIdInt = parseInt(userId);
              
     if (isNaN(userIdInt)) {
@@ -74,7 +105,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get the user's databaseId
+    if (!databaseId) {
+      return NextResponse.json(
+        { error: "Database ID not found" },
+        { status: 400 }
+      );
+    }
+
+    // Get the appropriate Prisma client for this tenant
+    const prisma = await getPrismaClientByDatabaseId(databaseId);
+    if (!prisma) {
+      console.error(`[POST /api/batches] ▶ Failed to get Prisma client for database: ${databaseId}`);
+      return NextResponse.json(
+        { error: "Database connection failed" },
+        { status: 500 }
+      );
+    }
+
+    // Get the user's databaseId from the tenant database
     const user = await prisma.beeusers.findUnique({
       where: { id: userIdInt },
       select: { databaseId: true }
@@ -89,6 +137,14 @@ export async function POST(request: NextRequest) {
       
     const body = await request.json();
     const { apiaries, ...batchData } = body;
+
+    // Validate required fields
+    if (!batchData.batchNumber) {
+      return NextResponse.json(
+        { error: "Batch number is required" },
+        { status: 400 }
+      );
+    }
  
     const parseCoordinate = (value: any): number | null => {
       if (value === null || value === undefined || value === '') {
@@ -97,12 +153,14 @@ export async function POST(request: NextRequest) {
              
       const parsed = typeof value === 'string' ? parseFloat(value) : Number(value);
              
-      if (isNaN(parsed) || (parsed === 0)) {
+      if (isNaN(parsed)) {
         return null;
       }
              
       return parsed;
     };
+
+    console.log(`[POST /api/batches] ▶ Creating batch for user: ${userIdInt}, database: ${databaseId}`);
  
     const batch = await prisma.batch.create({
       data: {
@@ -114,6 +172,7 @@ export async function POST(request: NextRequest) {
         totalHoneyCollected: parseFloat(batchData.weightKg) || 0, // Same as weightKg for consistency
         honeyCertified: 0, // No honey certified initially
         honeyRemaining: parseFloat(batchData.weightKg) || 0, // All honey is remaining initially
+        status: batchData.status || 'pending', // Add default status
         apiaries: {
           create: apiaries?.map((apiary: any) => ({
             name: apiary.name || '',
@@ -131,10 +190,21 @@ export async function POST(request: NextRequest) {
         apiaries: true,
       },
     });
+
+    console.log(`[POST /api/batches] ▶ Created batch: ${batch.id} for user: ${userIdInt}`);
  
     return NextResponse.json(batch, { status: 201 });
   } catch (error) {
     console.error("[POST /api/batches] ▶ Error:", error);
+    
+    // Handle Prisma-specific errors
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+  return NextResponse.json(
+    { error: "Batch number already exists" },
+    { status: 409 }
+  );
+}
+    
     return NextResponse.json(
       { error: "Failed to create batch" },
       { status: 500 }
@@ -155,9 +225,27 @@ export async function PUT(request: NextRequest) {
 
     // Handle both string and object returns from authenticateRequest
     const userIdString = typeof authResult === 'string' ? authResult : authResult.userId;
+    const databaseId = typeof authResult === 'object' ? authResult.databaseId : null;
     const userId = parseInt(userIdString);
 
-    // Get the user's databaseId
+    if (!databaseId) {
+      return NextResponse.json(
+        { error: "Database ID not found" },
+        { status: 400 }
+      );
+    }
+
+    // Get the appropriate Prisma client for this tenant
+    const prisma = await getPrismaClientByDatabaseId(databaseId);
+    if (!prisma) {
+      console.error(`[PUT /api/batches] ▶ Failed to get Prisma client for database: ${databaseId}`);
+      return NextResponse.json(
+        { error: "Database connection failed" },
+        { status: 500 }
+      );
+    }
+
+    // Get the user's databaseId from the tenant database
     const user = await prisma.beeusers.findUnique({
       where: { id: userId },
       select: { databaseId: true }
@@ -170,27 +258,34 @@ export async function PUT(request: NextRequest) {
       );
     }
     
-    const formData = await request.formData();
-    const data = JSON.parse(formData.get('data') as string);
+    const contentType = request.headers.get('content-type');
+    let data;
+    
+    // Handle both form data and JSON
+    if (contentType?.includes('multipart/form-data')) {
+      const formData = await request.formData();
+      data = JSON.parse(formData.get('data') as string);
+    } else {
+      data = await request.json();
+    }
+    
     const { batchId, updatedFields, apiaries, batchJars, jarCertifications } = data;
 
-    // Handle file uploads (production report and lab report)
-    let productionReportPath = null;
-    let labReportPath = null;
-
-    if (formData.get('productionReport')) {
-      // Handle production report file upload
-      productionReportPath = "public/uploads/production_report"; // Replace with actual saved path
+    if (!batchId) {
+      return NextResponse.json(
+        { error: 'Batch ID is required' },
+        { status: 400 }
+      );
     }
 
-    if (formData.get('labReport')) {
-      // Handle lab report file upload
-      labReportPath = "public/uploads/lab_report"; // Replace with actual saved path
-    }
+    console.log(`[PUT /api/batches] ▶ Updating batch: ${batchId} for user: ${userId}, database: ${databaseId}`);
 
     // Get the original batch to understand current state
-    const originalBatch = await prisma.batch.findUnique({
-      where: { id: batchId },
+    const originalBatch = await prisma.batch.findFirst({
+      where: { 
+        id: batchId,
+        userId: userId // Ensure user owns this batch
+      },
       select: { 
         weightKg: true, // This is the total honey collected
         totalHoneyCollected: true,
@@ -201,7 +296,7 @@ export async function PUT(request: NextRequest) {
 
     if (!originalBatch) {
       return NextResponse.json(
-        { error: 'Batch not found' },
+        { error: 'Batch not found or access denied' },
         { status: 404 }
       );
     }
@@ -256,118 +351,109 @@ export async function PUT(request: NextRequest) {
     const bothCertificationsPercent = totalHoneyCollected > 0 ? Math.round((bothCertifications / totalHoneyCollected) * 100) : 0;
     const uncertifiedPercent = totalHoneyCollected > 0 ? Math.round((newHoneyRemaining / totalHoneyCollected) * 100) : 0;
 
-    // Update the batch with correct values
-    const updatedBatch = await prisma.batch.update({
-      where: { id: batchId },
-      data: {
-        status: updatedFields.status,
-        jarCertifications: updatedFields.jarCertifications,
-        certificationDate: updatedFields.certificationDate,
-        expiryDate: updatedFields.expiryDate,
-        completedChecks: updatedFields.completedChecks,
-        totalChecks: updatedFields.totalChecks,
-        
-        // Keep weightKg as the definitive total honey collected (never changes after creation)
-        // Don't update weightKg here as it represents the original honey collected
-        
-        // Store honey tracking amounts correctly
-        totalHoneyCollected: totalHoneyCollected, // Keep consistent with weightKg
-        honeyCertified: newTotalCertified, // Cumulative certified amount
-        honeyRemaining: newHoneyRemaining, // Remaining honey after this certification
-        
-        // Store certification breakdowns
-        originOnly: originOnly,
-        qualityOnly: qualityOnly,
-        bothCertifications: bothCertifications,
-        uncertified: newHoneyRemaining, // Remaining honey is considered uncertified
-        
-        // Store percentages
-        originOnlyPercent: originOnlyPercent,
-        qualityOnlyPercent: qualityOnlyPercent,
-        bothCertificationsPercent: bothCertificationsPercent,
-        uncertifiedPercent: uncertifiedPercent,
-        
-        // Store jar information
-        jarsUsed: totalJarsUsed,
-        // Note: weightKg represents total honey collected, not honey certified in this session
-        
-        // Store file paths
-        productionReportPath: productionReportPath,
-        labReportPath: labReportPath,
-        updatedAt: new Date()
-      }
-    });
+    // Prepare update data
+    const updateData: any = {
+      updatedAt: new Date()
+    };
 
-    // Update associated apiaries with proper null checks and defaults
-    if (apiaries && apiaries.length > 0) {
-      for (const apiaryData of apiaries) {
-        // Find the apiary by name and number
-        const existingApiary = await prisma.apiary.findFirst({
-          where: {
-            name: apiaryData.name,
-            number: apiaryData.number,
-            batchId: batchId
-          }
-        });
-
-        if (existingApiary) {
-          // Update existing apiary with proper null checks
-          await prisma.apiary.update({
-            where: { id: existingApiary.id },
-            data: {
-              hiveCount: apiaryData.hiveCount || 0,
-              latitude: apiaryData.latitude || null,
-              longitude: apiaryData.longitude || null,
-              kilosCollected: apiaryData.kilosCollected || 0, // This should be the remaining amount
-            }
-          });
-        } else {
-          // Create new apiary with proper user, batch, and database relationships
-         await prisma.apiary.create({
-  data: {
-    name: apiaryData.name || '',
-    number: apiaryData.number || '',
-    hiveCount: apiaryData.hiveCount || 0,
-    latitude: apiaryData.latitude != null && apiaryData.latitude !== '' && !isNaN(parseFloat(apiaryData.latitude))
-      ? parseFloat(apiaryData.latitude)
-      : 0.0, // Default latitude if not provided
-    longitude: apiaryData.longitude != null && apiaryData.longitude !== '' && !isNaN(parseFloat(apiaryData.longitude))
-      ? parseFloat(apiaryData.longitude)
-      : 0.0, // Default longitude if not provided
-    kilosCollected: apiaryData.kilosCollected || 0,
-    databaseId: user.databaseId, // Add the required databaseId
-    batchId: batchId, // Use direct batchId instead of relation connect
-    userId: userId // Use direct userId instead of relation connect
-  }
-});
-        }
-      }
+    // Only update fields that are provided
+    if (updatedFields) {
+      if (updatedFields.status !== undefined) updateData.status = updatedFields.status;
+      if (updatedFields.jarCertifications !== undefined) updateData.jarCertifications = updatedFields.jarCertifications;
+      if (updatedFields.certificationDate !== undefined) updateData.certificationDate = updatedFields.certificationDate;
+      if (updatedFields.expiryDate !== undefined) updateData.expiryDate = updatedFields.expiryDate;
+      if (updatedFields.completedChecks !== undefined) updateData.completedChecks = updatedFields.completedChecks;
+      if (updatedFields.totalChecks !== undefined) updateData.totalChecks = updatedFields.totalChecks;
     }
 
-    // ✅ REMOVED: No more automatic token stats update from batch API
-    // Token stats should be updated separately by your frontend or dedicated service
-    // This prevents the duplicate token charging issue
+    // Add honey tracking if jars are being processed
+    if (batchJars && batchJars.length > 0) {
+      updateData.totalHoneyCollected = totalHoneyCollected;
+      updateData.honeyCertified = newTotalCertified;
+      updateData.honeyRemaining = newHoneyRemaining;
+      updateData.originOnly = originOnly;
+      updateData.qualityOnly = qualityOnly;
+      updateData.bothCertifications = bothCertifications;
+      updateData.uncertified = newHoneyRemaining;
+      updateData.originOnlyPercent = originOnlyPercent;
+      updateData.qualityOnlyPercent = qualityOnlyPercent;
+      updateData.bothCertificationsPercent = bothCertificationsPercent;
+      updateData.uncertifiedPercent = uncertifiedPercent;
+      updateData.jarsUsed = totalJarsUsed;
+    }
 
-    console.log('Batch completion summary:', {
+    // Update the batch using transaction for data consistency
+    const updatedBatch = await prisma.$transaction(async (tx) => {
+      // Update the batch
+      const batch = await tx.batch.update({
+        where: { id: batchId },
+        data: updateData
+      });
+
+      // Update associated apiaries if provided
+      if (apiaries && apiaries.length > 0) {
+        for (const apiaryData of apiaries) {
+          // Find the apiary by name and number
+          const existingApiary = await tx.apiary.findFirst({
+            where: {
+              name: apiaryData.name,
+              number: apiaryData.number,
+              batchId: batchId
+            }
+          });
+
+          if (existingApiary) {
+            // Update existing apiary
+            await tx.apiary.update({
+              where: { id: existingApiary.id },
+              data: {
+                hiveCount: apiaryData.hiveCount || 0,
+                latitude: apiaryData.latitude || null,
+                longitude: apiaryData.longitude || null,
+                kilosCollected: apiaryData.kilosCollected || 0,
+              }
+            });
+          } else {
+            // Create new apiary
+            await tx.apiary.create({
+              data: {
+                name: apiaryData.name || '',
+                number: apiaryData.number || '',
+                hiveCount: apiaryData.hiveCount || 0,
+                latitude: apiaryData.latitude != null && apiaryData.latitude !== '' && !isNaN(parseFloat(apiaryData.latitude))
+                  ? parseFloat(apiaryData.latitude)
+                  : null,
+                longitude: apiaryData.longitude != null && apiaryData.longitude !== '' && !isNaN(parseFloat(apiaryData.longitude))
+                  ? parseFloat(apiaryData.longitude)
+                  : null,
+                kilosCollected: apiaryData.kilosCollected || 0,
+                databaseId: user.databaseId,
+                batchId: batchId,
+                userId: userId
+              }
+            });
+          }
+        }
+      }
+
+      return batch;
+    });
+
+    console.log('Batch update summary:', {
       batchId,
-      totalHoneyCollected, // From weightKg
+      totalHoneyCollected,
       totalHoneyCertifiedInThisSession,
       newTotalCertified,
       newHoneyRemaining,
-      originOnly,
-      qualityOnly,
-      bothCertifications,
-      totalJarsUsed,
-      // Note: Token stats are NOT updated here to prevent duplicate charges
-      tokenStatsNote: 'Token stats should be updated separately by frontend'
+      totalJarsUsed
     });
 
     return NextResponse.json({
       success: true,
-      message: 'Batch completed successfully',
+      message: 'Batch updated successfully',
       batch: updatedBatch,
       summary: {
-        totalHoneyCollected, // From weightKg
+        totalHoneyCollected,
         honeyCertifiedThisSession: totalHoneyCertifiedInThisSession,
         totalHoneyCertified: newTotalCertified,
         honeyRemaining: newHoneyRemaining,
@@ -404,6 +490,7 @@ export async function DELETE(request: NextRequest) {
 
     // Handle both string and object returns from authenticateRequest
     const userId = typeof authResult === 'string' ? authResult : authResult.userId;
+    const databaseId = typeof authResult === 'object' ? authResult.databaseId : null;
     const userIdInt = parseInt(userId);
         
     if (isNaN(userIdInt)) {
@@ -411,6 +498,24 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json(
         { error: "Invalid user ID format" },
         { status: 400 }
+      );
+    }
+
+    if (!databaseId) {
+      console.error('[DELETE /api/batches] ▶ No database ID found in auth result');
+      return NextResponse.json(
+        { error: "Database ID not found" },
+        { status: 400 }
+      );
+    }
+
+    // Get the appropriate Prisma client for this tenant
+    const prisma = await getPrismaClientByDatabaseId(databaseId);
+    if (!prisma) {
+      console.error(`[DELETE /api/batches] ▶ Failed to get Prisma client for database: ${databaseId}`);
+      return NextResponse.json(
+        { error: "Database connection failed" },
+        { status: 500 }
       );
     }
 
@@ -426,7 +531,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    console.log(`[DELETE /api/batches] ▶ Attempting to delete batch: ${batchId} for user: ${userIdInt}`);
+    console.log(`[DELETE /api/batches] ▶ Attempting to delete batch: ${batchId} for user: ${userIdInt}, database: ${databaseId}`);
 
     // Verify the batch exists and belongs to the authenticated user
     const existingBatch = await prisma.batch.findFirst({
@@ -450,7 +555,6 @@ export async function DELETE(request: NextRequest) {
     // Use a transaction to ensure data consistency
     await prisma.$transaction(async (tx) => {
       // First, unlink apiaries from this batch (preserve the apiary locations)
-      // Set batchId to null instead of deleting the apiaries
       await tx.apiary.updateMany({
         where: {
           batchId: batchId,
@@ -468,7 +572,7 @@ export async function DELETE(request: NextRequest) {
       });
     });
 
-    console.log(`[DELETE /api/batches] ▶ Successfully deleted batch: ${batchId} and unlinked ${existingBatch.apiaries.length} apiaries (preserved locations)`);
+    console.log(`[DELETE /api/batches] ▶ Successfully deleted batch: ${batchId} and unlinked ${existingBatch.apiaries.length} apiaries`);
 
     return NextResponse.json(
       { 

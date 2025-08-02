@@ -27,6 +27,7 @@ export default function SlidingRegistrationPage() {
   const { name, value } = e.target;
   setFormData(prev => ({ ...prev, [name]: value }));
 };
+
   const handleToggleAuth = () => {
     setFormData(prev => ({ ...prev, useEmail: !prev.useEmail }));
   };
@@ -46,80 +47,101 @@ export default function SlidingRegistrationPage() {
     // Google OAuth logic
   };
 
-  const handleSubmit = async () => {
-    setError('');
-    setIsLoading(true);
+ const handleSubmit = async () => {
+  setError('');
+  setIsLoading(true);
 
-    // Basic validation
-    if (formData.password !== formData.confirmPassword) {
-      setError('Passwords do not match');
-      setIsLoading(false);
-      return;
-    }
+  // Basic validation
+  if (formData.password !== formData.confirmPassword) {
+    setError('Passwords do not match');
+    setIsLoading(false);
+    return;
+  }
 
-    if (formData.password.length < 8) {
-      setError('Password must be at least 8 characters long');
-      setIsLoading(false);
-      return;
-    }
+  if (formData.password.length < 8) {
+    setError('Password must be at least 8 characters long');
+    setIsLoading(false);
+    return;
+  }
 
-    if (isAdmin && !formData.adminCode) {
-      setError('Admin authorization code is required');
-      setIsLoading(false);
-      return;
-    }
+  if (isAdmin && !formData.adminCode) {
+    setError('Admin authorization code is required');
+    setIsLoading(false);
+    return;
+  }
 
-    const { firstname, lastname, email, phonenumber, password, adminCode, role, useEmail } = formData;
+  const { firstname, lastname, email, phonenumber, password, adminCode, role, useEmail } = formData;
 
-    try {
-      const endpoint = isAdmin ? '/api/admin/register' : '/api/register';
-      const payload = {
+  try {
+    const endpoint = isAdmin ? '/api/admin/register' : '/api/register';
+    
+    // Build payload based on user type
+    let payload: any;
+    
+    if (isAdmin) {
+      // Admin registration payload
+      payload = {
+        firstname,
+        lastname,
+        password,
+        adminCode,
+        role,
+        ...(useEmail ? { email } : { phonenumber }),
+        // Database details for admin registration
+        database: {
+          name: `${firstname.toLowerCase()}_${lastname.toLowerCase()}_db`,
+          displayName: `${firstname} ${lastname}'s Database`,
+          maxUsers: 1000,
+          maxStorage: 10.0
+        }
+      };
+    } else {
+      // Regular user registration payload
+      payload = {
         firstname,
         lastname,
         password,
         ...(useEmail ? { email } : { phonenumber }),
-        ...(isAdmin && { 
-          adminCode,
-          role,
-          // Database details for admin registration
-          database: {
-            name: `${firstname.toLowerCase()}_${lastname.toLowerCase()}_db`,
-            displayName: `${firstname} ${lastname}'s Database`,
-            maxUsers: 1000,
-            maxStorage: 10.0
-          }
-        })
       };
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-
-      if (res.ok && data.success) {
-        console.log('Registration successful:', data);
-        
-        if (isAdmin) {
-          router.push('/admin/dashboard');
-        } else {
-          router.push('/confirm-pending');
-        }
-      } else {
-        setError(data?.error || data?.message || 'Registration failed. Please try again.');
-        console.error('Registration failed:', data);
-      }
-    } catch (err) {
-      console.error('Network or unexpected error:', err);
-      setError('Something went wrong. Please try again.');
-    } finally {
-      setIsLoading(false);
     }
-  };
+
+    console.log('Final payload being sent:', payload);
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+
+    if (res.ok && data.success) {
+      console.log('Registration successful:', data);
+      
+      if (isAdmin) {
+        // Admin registration - go to admin dashboard
+        router.push('/admin/dashboard');
+      } else {
+        // User registration - check if confirmation is required
+        if (data.requiresConfirmation) {
+          router.push('/confirm-pending');
+        } else {
+          router.push(`/dashboard/db/${data.databaseId || 'default'}`);
+        }
+      }
+    } else {
+      setError(data?.error || data?.message || 'Registration failed. Please try again.');
+      console.error('Registration failed:', data);
+    }
+  } catch (err) {
+    console.error('Network or unexpected error:', err);
+    setError('Something went wrong. Please try again.');
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   return (
     <section className="relative min-h-screen w-full overflow-hidden">
@@ -179,7 +201,7 @@ export default function SlidingRegistrationPage() {
       <div className="absolute top-8 left-1/2 transform -translate-x-1/2 z-20 animate-fade-in">
         <div 
           className="relative cursor-pointer transition-transform hover:scale-105"
-          onClick={() => router.push('/')}
+          onClick={() => console.log('Navigate to home')}
         >
           <div className={`absolute inset-0 blur-xl rounded-xl transition-colors duration-1000 ${
             isAdmin ? 'bg-blue-500/20' : 'bg-yellow-400/20'
@@ -275,7 +297,7 @@ export default function SlidingRegistrationPage() {
                   {isAdmin ? 'Admin Registration' : 'Join Our Community'}
                 </h1>
                 <p className="text-gray-600 text-lg">
-                  {isAdmin ? 'Create administrator account' : 'Create your beekeeper account'}
+                  {isAdmin ? 'Create administrator account & database' : 'Create your beekeeper account'}
                 </p>
               </div>
 
@@ -328,83 +350,82 @@ export default function SlidingRegistrationPage() {
                   <div className="relative group">
                     <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                       <svg className="h-5 w-5 text-gray-400 group-focus-within:text-blue-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m0 0a2 2 0 012 2m-2-2a2 2 0 00-2 2m0 0a2 2 0 01-2 2m0 0a2 2 0 010 4h4a2 2 0 010-4zM9 7H7a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V9a2 2 0 00-2-2h-2" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                       </svg>
                     </div>
                     <input
                       type="password"
                       name="adminCode"
-                      placeholder="Admin Authorization Code"
                       value={formData.adminCode}
                       onChange={handleChange}
+                      placeholder="Enter admin authorization code"
+                      className="w-full pl-12 pr-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
                       required
-                      className="w-full pl-12 pr-4 py-4 bg-gray-50/80 backdrop-blur-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 text-gray-800 placeholder-gray-500"
                     />
                   </div>
                 )}
 
-                {/* Admin Role Selection */}
-                {isAdmin && (
-                  <div className="relative group">
-                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                      <svg className="h-5 w-5 text-gray-400 group-focus-within:text-blue-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                      </svg>
-                    </div>
-                    <select
-                      name="role"
-                      value={formData.role}
-                      onChange={handleChange}
-                      className="w-full pl-12 pr-4 py-4 bg-gray-50/80 backdrop-blur-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 text-gray-800 appearance-none"
-                    >
-                      <option value="super_admin">Super Admin</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                  </div>
-                )}
-
-                {/* Name Fields Row */}
+                {/* Name Fields */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="relative group">
                     <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                      <svg className={`h-5 w-5 text-gray-400 transition-colors ${
-                        isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'
-                      }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <svg className={`h-5 w-5 text-gray-400 group-focus-within:transition-colors ${isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                       </svg>
                     </div>
                     <input
                       type="text"
                       name="firstname"
-                      placeholder="First Name"
                       value={formData.firstname}
                       onChange={handleChange}
+                      placeholder="First name"
+                      className={`w-full pl-12 pr-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 ${isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'}`}
                       required
-                      className={`w-full pl-12 pr-4 py-4 bg-gray-50/80 backdrop-blur-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 text-gray-800 placeholder-gray-500 ${
-                        isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'
-                      }`}
                     />
                   </div>
-
                   <div className="relative group">
                     <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                      <svg className={`h-5 w-5 text-gray-400 transition-colors ${
-                        isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'
-                      }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <svg className={`h-5 w-5 text-gray-400 group-focus-within:transition-colors ${isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                       </svg>
                     </div>
                     <input
                       type="text"
                       name="lastname"
-                      placeholder="Last Name"
                       value={formData.lastname}
                       onChange={handleChange}
+                      placeholder="Last name"
+                      className={`w-full pl-12 pr-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 ${isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'}`}
                       required
-                      className={`w-full pl-12 pr-4 py-4 bg-gray-50/80 backdrop-blur-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 text-gray-800 placeholder-gray-500 ${
-                        isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'
-                      }`}
                     />
+                  </div>
+                </div>
+
+                {/* Toggle Between Email and Phone */}
+                <div className="flex items-center justify-center mb-4">
+                  <div className="flex bg-gray-100 rounded-xl p-1">
+                    <button
+                      type="button"
+                      onClick={() => setFormData(prev => ({ ...prev, useEmail: true }))}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
+                        formData.useEmail 
+                          ? `${isAdmin ? 'bg-blue-500' : 'bg-yellow-500'} text-white shadow-md` 
+                          : 'text-gray-600 hover:text-gray-800'
+                      }`}
+                    >
+                      📧 Email
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData(prev => ({ ...prev, useEmail: false }))}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
+                        !formData.useEmail 
+                          ? `${isAdmin ? 'bg-blue-500' : 'bg-yellow-500'} text-white shadow-md` 
+                          : 'text-gray-600 hover:text-gray-800'
+                      }`}
+                    >
+                      📱 Phone
+                    </button>
                   </div>
                 </div>
 
@@ -412,230 +433,192 @@ export default function SlidingRegistrationPage() {
                 <div className="relative group">
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                     {formData.useEmail ? (
-                      <svg className={`h-5 w-5 text-gray-400 transition-colors ${
-                        isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'
-                      }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 12a4 4 0 10-8 0 4 4 0 008 0zm0 0v1.5a2.5 2.5 0 005 0V12a9 9 0 10-9 9m4.5-1.206a8.959 8.959 0 01-4.5 1.207" />
+                      <svg className={`h-5 w-5 text-gray-400 group-focus-within:transition-colors ${isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                       </svg>
                     ) : (
-                      <svg className={`h-5 w-5 text-gray-400 transition-colors ${
-                        isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'
-                      }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <svg className={`h-5 w-5 text-gray-400 group-focus-within:transition-colors ${isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                       </svg>
                     )}
                   </div>
-                  {formData.useEmail ? (
-                    <input
-                      type="email"
-                      name="email"
-                      placeholder={isAdmin ? "Enter your official email" : "Enter your email"}
-                      value={formData.email}
-                      onChange={handleChange}
-                      required
-                      className={`w-full pl-12 pr-4 py-4 bg-gray-50/80 backdrop-blur-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 text-gray-800 placeholder-gray-500 ${
-                        isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'
-                      }`}
-                    />
-                  ) : (
-                    <input
-                      type="text"
-                      name="phonenumber"
-                      placeholder="Enter your phone number"
-                      value={formData.phonenumber}
-                      onChange={handleChange}
-                      required
-                      className={`w-full pl-12 pr-4 py-4 bg-gray-50/80 backdrop-blur-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 text-gray-800 placeholder-gray-500 ${
-                        isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'
-                      }`}
-                    />
-                  )}
+                  <input
+                    type={formData.useEmail ? "email" : "tel"}
+                    name={formData.useEmail ? "email" : "phonenumber"}
+                    value={formData.useEmail ? formData.email : formData.phonenumber}
+                    onChange={handleChange}
+                    placeholder={formData.useEmail ? "Enter your email" : "Enter your phone number"}
+                    className={`w-full pl-12 pr-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 ${isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'}`}
+                    required
+                  />
                 </div>
 
-                {/* Toggle Button - Only for Users */}
-                {!isAdmin && (
-                  <div className="text-center">
-                    <button
-                      type="button"
-                      onClick={handleToggleAuth}
-                      className={`text-sm font-medium hover:underline transition-all duration-300 flex items-center justify-center gap-2 mx-auto ${
-                        isAdmin 
-                          ? 'text-blue-600 hover:text-blue-700' 
-                          : 'text-yellow-600 hover:text-yellow-700'
-                      }`}
-                    >
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m0-4l-4-4" />
+                {/* Password Fields */}
+                <div className="space-y-4">
+                  <div className="relative group">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                      <svg className={`h-5 w-5 text-gray-400 group-focus-within:transition-colors ${isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                       </svg>
-                      {formData.useEmail ? 'Use phone number instead' : 'Use email instead'}
-                    </button>
+                    </div>
+                    <input
+                      type="password"
+                      name="password"
+                      value={formData.password}
+                      onChange={handleChange}
+                      placeholder="Create password"
+                      className={`w-full pl-12 pr-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 ${isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'}`}
+                      required
+                    />
+                  </div>
+                  <div className="relative group">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                      <svg className={`h-5 w-5 text-gray-400 group-focus-within:transition-colors ${isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                      </svg>
+                    </div>
+                    <input
+                      type="password"
+                      name="confirmPassword"
+                      value={formData.confirmPassword}
+                      onChange={handleChange}
+                      placeholder="Confirm password"
+                      className={`w-full pl-12 pr-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500' : 'focus:ring-yellow-500'}`}
+                      required
+                    />
+                  </div>
+                </div>
+
+                {/* Admin Role Selection - Only for Admins */}
+                {isAdmin && (
+                  <div className="relative group">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                      <svg className="h-5 w-5 text-gray-400 group-focus-within:text-blue-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                      </svg>
+                    </div>
+                    <select
+                      name="role"
+                      value={formData.role}
+                      onChange={handleChange}
+                      className="w-full pl-12 pr-4 py-4 bg-gray-50 border border-gray-200 rounded-xl text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 appearance-none"
+                      required
+                    >
+                      <option value="admin">System Administrator</option>
+                      <option value="super_admin">Super Administrator</option>
+                    </select>
+                    <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none">
+                      <svg className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
                   </div>
                 )}
 
-                {/* Password Fields */}
-                <div className="relative group">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                    <svg className={`h-5 w-5 text-gray-400 transition-colors ${
-                      isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'
-                    }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                    </svg>
-                  </div>
-                  <input
-                    type="password"
-                    name="password"
-                    placeholder="Create a password"
-                    value={formData.password}
-                    onChange={handleChange}
-                    required
-                    className={`w-full pl-12 pr-4 py-4 bg-gray-50/80 backdrop-blur-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 text-gray-800 placeholder-gray-500 ${
-                      isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'
-                    }`}
-                  />
-                </div>
-
-                <div className="relative group">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                    <svg className={`h-5 w-5 text-gray-400 transition-colors ${
-                      isAdmin ? 'group-focus-within:text-blue-500' : 'group-focus-within:text-yellow-500'
-                    }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                    </svg>
-                  </div>
-                  <input
-                    type="password"
-                    name="confirmPassword"
-                    placeholder="Confirm your password"
-                    value={formData.confirmPassword}
-                    onChange={handleChange}
-                    required
-                    className={`w-full pl-12 pr-4 py-4 bg-gray-50/80 backdrop-blur-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-300 text-gray-800 placeholder-gray-500 ${
-                      isAdmin ? 'focus:ring-blue-500' : 'focus:ring-yellow-500'
-                    }`}
-                  />
-                </div>
-
-                {/* Register Button */}
+                {/* Submit Button */}
                 <button
                   type="button"
                   onClick={handleSubmit}
                   disabled={isLoading}
-                  className={`relative w-full py-4 rounded-xl font-bold text-lg text-white shadow-xl transform transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none group overflow-hidden ${
+                  className={`w-full py-4 px-6 rounded-xl font-semibold text-white transition-all duration-300 transform hover:scale-[1.02] hover:-translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none shadow-lg hover:shadow-xl ${
                     isAdmin
-                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700'
-                      : 'bg-gradient-to-r from-yellow-500 to-amber-500 hover:from-yellow-600 hover:to-amber-600'
+                      ? 'bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700'
+                      : 'bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-600 hover:to-amber-700'
                   }`}
                 >
-                  {/* Loading Animation */}
-                  <div className={`absolute inset-0 bg-gradient-to-r transition-opacity duration-300 ${
-                    isLoading ? 'opacity-100' : 'opacity-0'
-                  } ${
-                    isAdmin
-                      ? 'from-blue-700 via-indigo-600 to-blue-700'
-                      : 'from-yellow-600 via-amber-500 to-yellow-600'
-                  }`}>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                  {isLoading ? (
+                    <div className="flex items-center justify-center gap-3">
+                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                      <span>Creating Account...</span>
                     </div>
-                  </div>
-
-                  {/* Button Content */}
-                  <span className={`transition-opacity duration-300 ${isLoading ? 'opacity-0' : 'opacity-100'}`}>
-                    {isAdmin ? '🛡️ Create Admin Account' : '🍯 Create Account'}
-                  </span>
-
-                  {/* Shine Effect */}
-                  <div className="absolute inset-0 -skew-x-12 bg-gradient-to-r from-transparent via-white/20 to-transparent transform translate-x-[-100%] group-hover:translate-x-[200%] transition-transform duration-700"></div>
+                  ) : (
+                    <div className="flex items-center justify-center gap-3">
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                      </svg>
+                      <span>{isAdmin ? 'Create Admin Account' : 'Join Community'}</span>
+                    </div>
+                  )}
                 </button>
 
                 {/* Terms and Privacy */}
-                <div className="text-center text-sm text-gray-500 leading-relaxed">
+                <div className="text-center text-sm text-gray-500">
                   By registering, you agree to our{' '}
-                  <a href="/terms" className={`font-medium hover:underline transition-colors ${
-                    isAdmin ? 'text-blue-600 hover:text-blue-700' : 'text-yellow-600 hover:text-yellow-700'
-                  }`}>
+                  <button type="button" className={`underline transition-colors ${isAdmin ? 'hover:text-blue-600' : 'hover:text-yellow-600'}`}>
                     Terms of Service
-                  </a>
-                  {' '}and{' '}
-                  <a href="/privacy" className={`font-medium hover:underline transition-colors ${
-                    isAdmin ? 'text-blue-600 hover:text-blue-700' : 'text-yellow-600 hover:text-yellow-700'
-                  }`}>
+                  </button>{' '}
+                  and{' '}
+                  <button type="button" className={`underline transition-colors ${isAdmin ? 'hover:text-blue-600' : 'hover:text-yellow-600'}`}>
                     Privacy Policy
-                  </a>
+                  </button>
+                </div>
+
+                {/* Login Link */}
+                <div className="text-center border-t border-gray-200 pt-6">
+                  <p className="text-gray-600">
+                    Already have an account?{' '}
+                    <button 
+                      type="button"
+                      onClick={() => router.push('/login')}
+                      className={`font-semibold underline transition-colors ${isAdmin ? 'text-blue-600 hover:text-blue-700' : 'text-yellow-600 hover:text-yellow-700'}`}
+                    >
+                      Sign in here
+                    </button>
+                  </p>
                 </div>
               </div>
-            </div>
-          </div>
-
-          {/* Login Link */}
-          <div className="text-center mt-8">
-            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-              <p className="text-white mb-4">
-                Already have an account?
-              </p>
-              <button
-                onClick={() => router.push('/login')}
-                className={`inline-flex items-center gap-2 px-6 py-3 rounded-xl font-semibold text-white border-2 transition-all duration-300 hover:scale-105 hover:shadow-lg ${
-                  isAdmin
-                    ? 'border-blue-400 hover:bg-blue-400/20 hover:border-blue-300'
-                    : 'border-yellow-400 hover:bg-yellow-400/20 hover:border-yellow-300'
-                }`}
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
-                </svg>
-                Sign In Instead
-              </button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Bottom Decoration */}
-      <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-black/20 to-transparent pointer-events-none"></div>
-      
-      {/* Floating Elements */}
-      <div className="absolute bottom-10 left-10 opacity-30">
-        <div className={`w-24 h-24 rounded-full animate-pulse transition-colors duration-1000 ${
-          isAdmin ? 'bg-blue-300/20' : 'bg-yellow-300/20'
-        }`}></div>
-      </div>
-      <div className="absolute bottom-20 right-20 opacity-20">
-        <div className={`w-16 h-16 rounded-full animate-bounce delay-1000 transition-colors duration-1000 ${
-          isAdmin ? 'bg-indigo-400/30' : 'bg-amber-400/30'
-        }`}></div>
+      {/* Floating Action Hints */}
+      <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-20">
+        <div className="flex items-center gap-4 bg-white/10 backdrop-blur-sm rounded-full px-6 py-3 border border-white/20">
+          <div className="flex items-center gap-2 text-white/80 text-sm">
+            <div className={`w-2 h-2 rounded-full animate-pulse ${isAdmin ? 'bg-blue-400' : 'bg-yellow-400'}`}></div>
+            <span>{isAdmin ? 'Admin Portal Active' : 'User Registration Active'}</span>
+          </div>
+        </div>
       </div>
 
-      {/* Custom Styles */}
+      {/* Additional Styles */}
       <style jsx>{`
-        @keyframes slide-down {
-          from {
-            transform: translateY(-100%);
-            opacity: 0;
-          }
-          to {
-            transform: translateY(0);
-            opacity: 1;
-          }
-        }
-
         @keyframes fade-in {
-          from {
-            opacity: 0;
-            transform: translateY(-20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+          from { opacity: 0; transform: translateY(-20px); }
+          to { opacity: 1; transform: translateY(0); }
         }
-
+        
+        @keyframes slide-down {
+          from { transform: translateY(-100%); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+        
+        .animate-fade-in {
+          animation: fade-in 0.6s ease-out;
+        }
+        
         .animate-slide-down {
           animation: slide-down 0.3s ease-out;
         }
-
-        .animate-fade-in {
-          animation: fade-in 0.6s ease-out;
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+          width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.3);
+          border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.5);
         }
       `}</style>
     </section>

@@ -1,9 +1,7 @@
 // src/app/api/apiaries/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
 import { authenticateRequest } from "@/lib/auth";
-
-const prisma = new PrismaClient();
+import { getPrismaClientByDatabaseId } from "@/lib/prisma-manager";
 
 interface LocationData {
   latitude: string | number;
@@ -40,11 +38,70 @@ export async function GET(request: NextRequest) {
     const { userId, databaseId } = authResult;
     console.log('[GET /api/apiaries] ▶ Authenticated user ID:', userId, 'Database ID:', databaseId);
 
+    // Get the correct databaseId from JWT and extract user email
+    const token = request.headers.get('authorization')?.replace('Bearer ', '');
+    let finalDatabaseId = databaseId;
+    let userEmail = null;
+    
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const payload = jwt.decode(token);
+        if (payload && payload.databaseId) {
+          finalDatabaseId = payload.databaseId;
+          userEmail = payload.email;
+          console.log('[GET /api/apiaries] ▶ Using JWT databaseId:', finalDatabaseId, 'email:', userEmail);
+        }
+      } catch (error) {
+        console.warn('[GET /api/apiaries] ▶ Could not decode JWT for databaseId fix');
+      }
+    }
+
+    if (!userEmail) {
+      console.error('[GET /api/apiaries] ▶ No user email found in JWT');
+      return NextResponse.json(
+        { error: "Invalid authentication token" },
+        { status: 401 }
+      );
+    }
+
+    // Get Prisma client for the specific database
+    const prisma = await getPrismaClientByDatabaseId(finalDatabaseId);
+    
+    if (!prisma) {
+      console.error('[GET /api/apiaries] ▶ Could not get Prisma client for databaseId:', finalDatabaseId);
+      return NextResponse.json(
+        { error: "Database configuration not found" },
+        { status: 404 }
+      );
+    }
+
+    console.log('[GET /api/apiaries] ▶ Using database ID:', finalDatabaseId);
+
+    // FIND THE CORRECT USER ID IN THE TARGET DATABASE
+    // The user might have different IDs in different databases
+    const userInTargetDb = await prisma.beeusers.findFirst({
+      where: { 
+        email: userEmail
+      }
+    });
+
+    if (!userInTargetDb) {
+      console.error('[GET /api/apiaries] ▶ User not found in target database:', finalDatabaseId);
+      return NextResponse.json(
+        { error: "User not found in target database. Please contact support." },
+        { status: 404 }
+      );
+    }
+
+    const targetUserId = userInTargetDb.id;
+    console.log('[GET /api/apiaries] ▶ Using target database user ID:', targetUserId);
+
     // Fetch all apiaries for the user in their specific database
     const apiaries = await prisma.apiary.findMany({
       where: {
-        userId: parseInt(String(userId)),
-        databaseId: databaseId,
+        userId: targetUserId,
+        databaseId: finalDatabaseId,
       },
       orderBy: {
         createdAt: 'desc',
@@ -57,8 +114,6 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('Error in GET /api/apiaries:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
-  } finally {
-    await prisma.$disconnect();
   }
 }
 
@@ -78,6 +133,65 @@ export async function POST(request: NextRequest) {
     // Extract userId and databaseId from the auth result
     const { userId, databaseId } = authResult;
     console.log('[POST /api/apiaries] ▶ Authenticated user ID:', userId, 'Database ID:', databaseId);
+
+    // Get the correct databaseId from JWT and extract user email
+    const token = request.headers.get('authorization')?.replace('Bearer ', '');
+    let finalDatabaseId = databaseId;
+    let userEmail = null;
+    
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const payload = jwt.decode(token);
+        if (payload && payload.databaseId) {
+          finalDatabaseId = payload.databaseId;
+          userEmail = payload.email;
+          console.log('[POST /api/apiaries] ▶ Using JWT databaseId:', finalDatabaseId, 'email:', userEmail);
+        }
+      } catch (error) {
+        console.warn('[POST /api/apiaries] ▶ Could not decode JWT for databaseId fix');
+      }
+    }
+
+    if (!userEmail) {
+      console.error('[POST /api/apiaries] ▶ No user email found in JWT');
+      return NextResponse.json(
+        { error: "Invalid authentication token" },
+        { status: 401 }
+      );
+    }
+
+    // Get Prisma client for the specific database
+    const prisma = await getPrismaClientByDatabaseId(finalDatabaseId);
+    
+    if (!prisma) {
+      console.error('[POST /api/apiaries] ▶ Could not get Prisma client for databaseId:', finalDatabaseId);
+      return NextResponse.json(
+        { error: "Database configuration not found" },
+        { status: 404 }
+      );
+    }
+
+    console.log('[POST /api/apiaries] ▶ Using database ID:', finalDatabaseId);
+
+    // FIND THE CORRECT USER ID IN THE TARGET DATABASE
+    // The user might have different IDs in different databases
+    const userInTargetDb = await prisma.beeusers.findFirst({
+      where: { 
+        email: userEmail
+      }
+    });
+
+    if (!userInTargetDb) {
+      console.error('[POST /api/apiaries] ▶ User not found in target database:', finalDatabaseId);
+      return NextResponse.json(
+        { error: "User not found in target database. Please contact support." },
+        { status: 404 }
+      );
+    }
+
+    const targetUserId = userInTargetDb.id;
+    console.log('[POST /api/apiaries] ▶ Using target database user ID:', targetUserId);
 
     const body: CreateApiaryBody = await request.json();
     console.log('[POST /api/apiaries] ▶ Request body:', body);
@@ -146,8 +260,8 @@ export async function POST(request: NextRequest) {
     const existingApiary = await prisma.apiary.findFirst({
       where: { 
         number,
-        userId: parseInt(String(userId)),
-        databaseId: databaseId,
+        userId: targetUserId,
+        databaseId: finalDatabaseId,
       },
     });
     
@@ -170,6 +284,18 @@ export async function POST(request: NextRequest) {
     // Determine kilos collected - priority: kilosCollected, then honeyCollected
     const finalKilosCollected = parseFloat(String(kilosCollected || honeyCollected)) || 0;
 
+    console.log('[POST /api/apiaries] ▶ Creating apiary with data:', {
+      name: name.trim(),
+      number: number.trim(),
+      hiveCount: parseInt(String(hiveCount)) || 0,
+      latitude: lat,
+      longitude: lng,
+      locationName: processedLocationName,
+      kilosCollected: Math.max(0, finalKilosCollected),
+      userId: targetUserId,
+      databaseId: finalDatabaseId
+    });
+
     // Create the new apiary
     const newApiary = await prisma.apiary.create({
       data: {
@@ -180,8 +306,8 @@ export async function POST(request: NextRequest) {
         longitude: lng,
         locationName: processedLocationName,
         kilosCollected: Math.max(0, finalKilosCollected),
-        userId: parseInt(String(userId)),
-        databaseId: databaseId, // Use the databaseId from auth result
+        userId: targetUserId, // Use the correct user ID for the target database
+        databaseId: finalDatabaseId, // Use the correct databaseId from JWT
       },
     });
 
@@ -190,6 +316,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(newApiary, { status: 201 });
   } catch (error) {
     console.error('Error in POST /api/apiaries:', error);
+    
+    // More specific error handling
+    if (error instanceof Error && 'code' in error && error.code === 'P2003') {
+  return NextResponse.json(
+    {
+      message: 'Database reference error. Please contact support.',
+      error: 'Foreign key constraint violation',
+    },
+    { status: 400 }
+  );
+}
     return NextResponse.json(
       {
         message: 'Internal server error',
@@ -197,7 +334,5 @@ export async function POST(request: NextRequest) {
       },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }

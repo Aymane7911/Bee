@@ -7,6 +7,7 @@ import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from 'jsonwebtoken';
 import { NextRequest } from 'next/server';
+import { masterDb } from '@/lib/database-connection'; 
 
 // Extend NextAuth types
 declare module "next-auth" {
@@ -211,7 +212,7 @@ export async function getUserFromToken(token: string): Promise<{ userId: string;
 
     // Remove 'Bearer ' prefix if present
     const cleanToken = token.replace(/^Bearer\s+/i, '').trim();
-    
+        
     if (!cleanToken) {
       console.log('[getUserFromToken] Empty token after cleaning');
       return null;
@@ -245,37 +246,98 @@ export async function getUserFromToken(token: string): Promise<{ userId: string;
 
     if (decoded.userId) {
       userId = decoded.userId.toString();
-    } else if (decoded.email) {
-      // Fallback: lookup user by email
-      const dbUser = await prisma.beeusers.findFirst({
-        where: { email: decoded.email },
-        select: { id: true, databaseId: true }
-      });
+    } else if (decoded.email && decoded.databaseId) {
+      // ✅ FIX: Search in the TENANT database, not master database
+      console.log('[getUserFromToken] userId undefined, searching by email in tenant database:', decoded.databaseId);
       
-      if (dbUser) {
-        userId = dbUser.id.toString();
-        databaseId = dbUser.databaseId;
+      // Get the tenant database URL from master database
+      const database = await masterDb.database.findUnique({
+        where: { id: decoded.databaseId },
+        select: { databaseUrl: true, isActive: true }
+      });
+
+      if (!database || !database.isActive) {
+        console.error('[getUserFromToken] Database not found or inactive:', decoded.databaseId);
+        return null;
+      }
+
+      // Connect to the tenant database
+      const tenantDb = new PrismaClient({
+        datasources: {
+          db: {
+            url: database.databaseUrl,
+          },
+        },
+      });
+
+      try {
+        await tenantDb.$connect();
+        
+        // Search for user in the TENANT database
+        const dbUser = await tenantDb.beeusers.findFirst({
+          where: { email: decoded.email },
+          select: { id: true, databaseId: true }
+        });
+        
+        if (dbUser) {
+          userId = dbUser.id.toString();
+          databaseId = dbUser.databaseId;
+          console.log('[getUserFromToken] Found user in tenant database:', { userId, databaseId });
+        } else {
+          console.warn('[getUserFromToken] User not found in tenant database with email:', decoded.email);
+        }
+      } finally {
+        await tenantDb.$disconnect();
       }
     }
 
     if (!userId || !databaseId) {
-      console.warn('[getUserFromToken] Missing userId or databaseId in JWT');
+      console.warn('[getUserFromToken] Missing userId or databaseId after lookup');
       return null;
     }
 
-    // CRITICAL: Check if user still exists in database
-    const userExists = await prisma.beeusers.findUnique({
-      where: { id: parseInt(userId) },
-      select: { id: true, databaseId: true }
+    // ✅ FIX: Verify user exists in the TENANT database, not master
+    console.log('[getUserFromToken] Verifying user exists in tenant database...');
+    
+    // Get the tenant database URL again
+    const database = await masterDb.database.findUnique({
+      where: { id: databaseId },
+      select: { databaseUrl: true, isActive: true }
     });
 
-    if (!userExists) {
-      console.warn('[getUserFromToken] User no longer exists in database:', userId);
+    if (!database || !database.isActive) {
+      console.error('[getUserFromToken] Database not found or inactive during verification:', databaseId);
       return null;
     }
 
-    console.log('[getUserFromToken] User verified and exists:', { userId, databaseId });
-    return { userId, databaseId };
+    // Connect to tenant database for verification
+    const tenantDb = new PrismaClient({
+      datasources: {
+        db: {
+          url: database.databaseUrl,
+        },
+      },
+    });
+
+    try {
+      await tenantDb.$connect();
+      
+      const userExists = await tenantDb.beeusers.findUnique({
+        where: { id: parseInt(userId) },
+        select: { id: true, databaseId: true }
+      });
+
+      if (!userExists) {
+        console.warn('[getUserFromToken] User no longer exists in tenant database:', userId);
+        return null;
+      }
+
+      console.log('[getUserFromToken] User verified and exists in tenant database:', { userId, databaseId });
+      return { userId, databaseId };
+      
+    } finally {
+      await tenantDb.$disconnect();
+    }
 
   } catch (error: any) {
     if (error.name === 'TokenExpiredError') {

@@ -304,9 +304,11 @@ const BatchTable: React.FC<BatchTableProps> = ({
                             ({batch.apiaries.slice(0, 2).map(a => a.name).join(', ')}
                             {batch.apiaries.length > 2 ? '...' : ''})
                           </span>
+                          
                         )}
                       </div>
                     </td>
+                    
                     <td className="px-4 py-3">
                       <button
                         onClick={(e) => {

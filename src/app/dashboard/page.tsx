@@ -343,7 +343,7 @@ const [user, setUser] = useState<User | null>(null);
   // Add this function in your parent component
 const handleUpdateApiaryHiveCount = async (apiaryId: string, newHiveCount: number) => {
   try {
-    const token = localStorage.getItem('authToken') || localStorage.getItem('token');
+    const token = localStorage.getItem('authToken') || localStorage.getItem('token') ||  localStorage.getItem('admin-token');
     
     if (!token) {
       throw new Error('No authentication token found');
@@ -1114,7 +1114,7 @@ const [tokenBalance, setTokenBalance] = useState(0); // Start with 0
       let data: AppData = defaultData;
       
       try {
-        const token = localStorage.getItem('token') || localStorage.getItem('authtoken');
+        const token = localStorage.getItem('token') || localStorage.getItem('authtoken') ||  localStorage.getItem('admin-token');
         
         if (token) {
           // Only attempt to fetch if a token exists
@@ -1276,7 +1276,7 @@ const handleBuyTokens = () => {
   setLoading(true);
 
   try {
-    const token = localStorage.getItem("token");
+    const token = localStorage.getItem("token") || localStorage.getItem('admin-token');
     if (!token) {
       throw new Error("No token found. Please log in again.");
     }
@@ -1522,7 +1522,7 @@ useEffect(() => {
 useEffect(() => {
   const loadSavedData = async () => {
     try {
-      const token = localStorage.getItem("token");
+      const token = localStorage.getItem("token") || localStorage.getItem('admin-token');
       if (!token) {
         console.error("No token found. Please log in again.");
         return;
@@ -1905,7 +1905,7 @@ const handleLocationConfirm = async (name: string | null = null) => {
   try {
     setIsSaving(true);
     
-    const token = localStorage.getItem('token') || localStorage.getItem('authToken') || localStorage.getItem('auth-token');
+    const token = localStorage.getItem('token') || localStorage.getItem('authToken') || localStorage.getItem('admin-token');
     
     if (!token) {
       setNotification({
