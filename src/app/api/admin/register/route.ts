@@ -1,7 +1,9 @@
-// app/api/admin/register/route.ts - RENDER COMPATIBLE VERSION
+// app/api/admin/register/route.ts - FIXED VERSION
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { NextRequest, NextResponse } from 'next/server';
+import { Client } from 'pg';
+import { execSync } from 'child_process';
 
 // Initialize Prisma with connection testing
 const prisma = new PrismaClient({
@@ -80,104 +82,14 @@ const ADMIN_CODES: Record<string, string> = {
   admin: process.env.ADMIN_CODE || 'admin_2024_secure'
 };
 
-// Check if we're running on Render or other managed service
-function isMangedDatabase(): boolean {
-  return (
-    process.env.RENDER === 'true' || 
-    process.env.DATABASE_PROVIDER === 'render' ||
-    process.env.SKIP_DATABASE_CREATION === 'true' ||
-    process.env.NODE_ENV === 'production'
-  );
-}
-
-// Create admin in the existing database (Render approach)
-async function createAdminInExistingDatabase(
-  adminData: {
-    firstname: string;
-    lastname: string;
-    email: string;
-    password: string;
-    role: string;
-  },
-  dbConfig: {
-    name: string;
-    displayName: string;
-    description: string;
-    maxUsers: number;
-    maxStorage: number;
-  }
-): Promise<{ admin: any; database: any; adminUser: any }> {
-  
-  try {
-    console.log('🔧 Creating admin in existing database...');
-    
-    // Step 1: Create admin record
-    const admin = await prisma.admin.create({
-      data: {
-        firstname: adminData.firstname,
-        lastname: adminData.lastname,
-        email: adminData.email,
-        password: adminData.password,
-        role: adminData.role,
-        isActive: true,
-      }
-    });
-    console.log(`✅ Admin created with ID: ${admin.id}`);
-    
-    // Step 2: Create database record (logical database, not physical)
-    const database = await prisma.database.create({
-      data: {
-        name: dbConfig.name,
-        displayName: dbConfig.displayName,
-        databaseUrl: process.env.DATABASE_URL || '', // Use current database URL
-        description: dbConfig.description,
-        maxUsers: dbConfig.maxUsers,
-        maxStorage: dbConfig.maxStorage,
-        managedBy: { connect: { id: admin.id } },
-        isActive: true,
-      }
-    });
-    console.log(`✅ Database record created with ID: ${database.id}`);
-    
-    // Step 3: Create admin as a user in beeusers table
-    const adminUser = await prisma.beeusers.create({
-      data: {
-        firstname: adminData.firstname,
-        lastname: adminData.lastname,
-        email: adminData.email,
-        password: adminData.password,
-        role: 'admin',
-        isAdmin: true,
-        adminId: admin.id,
-        isConfirmed: true,
-        isProfileComplete: true,
-        databaseId: database.id,
-      }
-    });
-    console.log(`✅ Admin user created with ID: ${adminUser.id}`);
-    
-    return { admin, database, adminUser };
-    
-  } catch (error: any) {
-    console.error('❌ Failed to create admin in existing database:', error.message);
-    throw new Error(`Failed to create admin: ${error.message}`);
-  }
-}
-
-// Original database creation function (for local development)
+// Database creation without user creation
 async function createPhysicalDatabase(databaseName: string): Promise<{
   connectionString: string;
   dbUser: string;
   dbPassword: string;
 }> {
-  // Only use this in local development
-  if (isMangedDatabase()) {
-    throw new Error('Physical database creation not supported in managed environment');
-  }
-  
   console.log('🔍 Testing master database connection...');
   
-  const { Client } = require('pg');
   const masterClient = new Client({
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432'),
@@ -225,7 +137,7 @@ async function createPhysicalDatabase(databaseName: string): Promise<{
   }
 }
 
-// Apply schema to new database (only for local development)
+// Schema application
 async function applySchemaToNewDatabase(
   connectionString: string, 
   databaseName: string
@@ -233,7 +145,6 @@ async function applySchemaToNewDatabase(
   try {
     console.log(`📋 Applying schema to database: ${databaseName}`);
     
-    const { execSync } = require('child_process');
     execSync(`npx prisma db push --schema=./prisma/schema.prisma --accept-data-loss --skip-generate`, {
       stdio: 'inherit',
       env: { 
@@ -252,8 +163,156 @@ async function applySchemaToNewDatabase(
   }
 }
 
-// Main database initialization function
-async function initializeDatabase(
+// Create admin as user in beeusers table
+async function createAdminAsUser(
+  connectionString: string,
+  databaseId: string,
+  adminId: number,
+  adminData: {
+    firstname: string;
+    lastname: string;
+    email: string;
+    password: string;
+    role: string;
+  }
+): Promise<any> {
+  const newDbPrisma = new PrismaClient({
+    datasources: {
+      db: {
+        url: connectionString,
+      },
+    },
+  });
+
+  try {
+    await newDbPrisma.$connect();
+    console.log('✅ Connected to new database for user creation');
+
+    // Create admin as a user in beeusers table
+    const adminUser = await newDbPrisma.beeusers.create({
+      data: {
+        firstname: adminData.firstname,
+        lastname: adminData.lastname,
+        email: adminData.email,
+        password: adminData.password,
+        role: 'admin', // Set role as admin in beeusers
+        isAdmin: true, // Mark as admin
+        adminId: adminId, // Reference to admin table
+        isConfirmed: true, // Auto-confirm admin users
+        isProfileComplete: true, // Mark profile as complete
+        databaseId: databaseId, // Required database association
+      }
+    });
+
+    console.log(`✅ Admin created as user in beeusers table with ID: ${adminUser.id}`);
+    return adminUser;
+
+  } catch (error: any) {
+    console.error('❌ Failed to create admin as user:', error.message);
+    throw new Error(`Failed to create admin as user: ${error.message}`);
+  } finally {
+    await newDbPrisma.$disconnect();
+  }
+}
+
+// Create admin in the new database
+async function createAdminInNewDatabase(
+  connectionString: string,
+  adminData: {
+    firstname: string;
+    lastname: string;
+    email: string;
+    password: string;
+    role: string;
+  }
+): Promise<any> {
+  const newDbPrisma = new PrismaClient({
+    datasources: {
+      db: {
+        url: connectionString,
+      },
+    },
+  });
+
+  try {
+    await newDbPrisma.$connect();
+    console.log('✅ Connected to new database for admin creation');
+
+    // Create admin in the new database
+    const admin = await newDbPrisma.admin.create({
+      data: {
+        firstname: adminData.firstname,
+        lastname: adminData.lastname,
+        email: adminData.email,
+        password: adminData.password,
+        role: adminData.role,
+        isActive: true,
+      }
+    });
+
+    console.log(`✅ Admin created in new database with ID: ${admin.id}`);
+    return admin;
+
+  } catch (error: any) {
+    console.error('❌ Failed to create admin in new database:', error.message);
+    throw new Error(`Failed to create admin in new database: ${error.message}`);
+  } finally {
+    await newDbPrisma.$disconnect();
+  }
+}
+
+// Create database record in new database (not master)
+async function createDatabaseRecordInNewDatabase(
+  connectionString: string,
+  adminId: number,
+  dbConfig: {
+    name: string;
+    displayName: string;
+    description: string;
+    maxUsers: number;
+    maxStorage: number;
+  }
+): Promise<any> {
+  const newDbPrisma = new PrismaClient({
+    datasources: {
+      db: {
+        url: connectionString,
+      },
+    },
+  });
+
+  try {
+    await newDbPrisma.$connect();
+    console.log('✅ Connected to new database for database record creation');
+
+    // Create database record in the new database itself
+    const databaseRecord = await newDbPrisma.database.create({
+      data: {
+        name: dbConfig.name,
+        displayName: dbConfig.displayName,
+        databaseUrl: connectionString,
+        description: dbConfig.description,
+        maxUsers: dbConfig.maxUsers,
+        maxStorage: dbConfig.maxStorage,
+        managedBy: { connect: { id: adminId } }, // Connect to the admin in the same database
+        isActive: true,
+      }
+    });
+
+    console.log(`✅ Database record created in new database with ID: ${databaseRecord.id}`);
+    return databaseRecord;
+
+  } catch (error: any) {
+    console.error('❌ Failed to create database record in new database:', error.message);
+    throw new Error(`Failed to create database record in new database: ${error.message}`);
+  } finally {
+    await newDbPrisma.$disconnect();
+  }
+}
+
+// Database initialization with admin creation
+async function initializeNewDatabase(
+  connectionString: string,
   adminData: {
     firstname: string;
     lastname: string;
@@ -269,23 +328,34 @@ async function initializeDatabase(
     maxStorage: number;
   }
 ): Promise<{ admin: any; database: any; adminUser: any }> {
-
-  if (isMangedDatabase()) {
-    console.log('🏢 Detected managed database environment (Render/Production)');
-    console.log('⏭️ Skipping physical database creation, using existing database');
-    return await createAdminInExistingDatabase(adminData, dbConfig);
-  } else {
-    console.log('💻 Local development environment detected');
-    console.log('🗄️ Creating physical database...');
+  try {
+    console.log('🔧 Initializing database with admin...');
     
-    // Original logic for local development
-    const dbConnectionInfo = await createPhysicalDatabase(dbConfig.name);
-    await applySchemaToNewDatabase(dbConnectionInfo.connectionString, dbConfig.name);
+    // Step 1: Create admin in the new database
+    const admin = await createAdminInNewDatabase(connectionString, adminData);
     
-    // Initialize new database with admin (your original complex logic here)
-    // ... (keep your original local development logic)
+    // Step 2: Create database record in the new database (with admin reference)
+    const database = await createDatabaseRecordInNewDatabase(
+      connectionString,
+      admin.id,
+      dbConfig
+    );
     
-    throw new Error('Local development database creation not implemented in this version');
+    // Step 3: Create admin as a user in beeusers table
+    console.log('👥 Creating admin as user in beeusers table...');
+    const adminUser = await createAdminAsUser(
+      connectionString,
+      database.id,
+      admin.id,
+      adminData
+    );
+    
+    console.log('✅ Database initialized successfully with admin, database record, and admin user');
+    return { admin, database, adminUser };
+    
+  } catch (error: any) {
+    console.error('❌ Database initialization failed:', error.message);
+    throw new Error(`Failed to initialize database: ${error.message}`);
   }
 }
 
@@ -368,52 +438,147 @@ export async function POST(request: NextRequest): Promise<NextResponse<AdminRegi
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Initialize database and create admin
-    const result = await initializeDatabase(
-      {
-        firstname,
-        lastname,
-        email: adminEmail,
-        password: hashedPassword,
-        role
-      },
-      dbConfig
-    );
+    // Start the process
+    let dbConnectionInfo: {
+      connectionString: string;
+      dbUser: string;
+      dbPassword: string;
+    } | null = null;
+
+    let createdAdmin: any;
+    let newDatabase: any;
+    let masterDbAdmin: any;
+    let adminUser: any;
+
+    try {
+      // Step 1: Create physical database
+      console.log('🗄️ Creating physical database...');
+      dbConnectionInfo = await createPhysicalDatabase(dbConfig.name);
+      console.log('✅ Physical database created successfully');
+
+      // Step 2: Apply schema to new database
+      console.log('📋 Applying schema to new database...');
+      await applySchemaToNewDatabase(dbConnectionInfo.connectionString, dbConfig.name);
+      console.log('✅ Schema applied successfully');
+
+      // Step 3: Create admin in MASTER database first (for tracking purposes)
+      console.log('👤 Creating admin in master database...');
+      masterDbAdmin = await prisma.admin.create({
+        data: {
+          firstname,
+          lastname,
+          email: adminEmail,
+          password: hashedPassword,
+          role,
+          isActive: true,
+        }
+      });
+      console.log('✅ Admin created in master database');
+
+      // Step 4: Create database record in MASTER database
+      console.log('💾 Creating database record in master database...');
+      const masterDatabaseRecord = await prisma.database.create({
+        data: {
+          name: dbConfig.name,
+          displayName: dbConfig.displayName,
+          databaseUrl: dbConnectionInfo.connectionString,
+          description: dbConfig.description,
+          maxUsers: dbConfig.maxUsers,
+          maxStorage: dbConfig.maxStorage,
+          managedBy: { connect: { id: masterDbAdmin.id } },
+          isActive: true,
+        }
+      });
+      console.log(`✅ Database record created in master database with ID: ${masterDatabaseRecord.id}`);
+
+      // Step 5: Initialize the new database with admin and database record
+      console.log('🔧 Initializing new database with admin and database record...');
+      const initResult = await initializeNewDatabase(
+        dbConnectionInfo.connectionString,
+        {
+          firstname,
+          lastname,
+          email: adminEmail,
+          password: hashedPassword,
+          role
+        },
+        dbConfig
+      );
+      
+      createdAdmin = initResult.admin;
+      newDatabase = initResult.database;
+      adminUser = initResult.adminUser;
+      console.log('✅ New database initialized successfully');
+
+    } catch (error: any) {
+      console.error('❌ Registration process failed:', error.message);
+      
+      // Cleanup: Try to remove the physical database if it was created
+      if (dbConnectionInfo) {
+        try {
+          console.log('🧹 Attempting to cleanup created database...');
+          const masterClient = new Client({
+            host: process.env.DB_HOST || 'localhost',
+            port: parseInt(process.env.DB_PORT || '5432'),
+            user: process.env.DB_ADMIN_USER || 'postgres',
+            password: process.env.DB_ADMIN_PASSWORD,
+            database: 'postgres'
+          });
+          
+          await masterClient.connect();
+          await masterClient.query(`DROP DATABASE IF EXISTS "${dbConfig.name}"`);
+          await masterClient.end();
+          console.log('✅ Cleanup completed');
+        } catch (cleanupError) {
+          console.error('❌ Cleanup failed:', cleanupError);
+        }
+      }
+
+      // Cleanup: Remove admin from master database if created
+      if (masterDbAdmin) {
+        try {
+          await prisma.admin.delete({ where: { id: masterDbAdmin.id } });
+          console.log('✅ Master database admin cleanup completed');
+        } catch (cleanupError) {
+          console.error('❌ Master database admin cleanup failed:', cleanupError);
+        }
+      }
+      
+      throw error;
+    }
 
     console.log('🎉 Admin registration completed successfully!');
 
     return NextResponse.json<AdminRegistrationResponse>({
       success: true,
-      message: isMangedDatabase() 
-        ? 'Admin account created successfully in existing database. All records created in the shared database.'
-        : 'Admin account and database created successfully. Admin registered in both master and new database, and added as user in beeusers table.',
+      message: 'Admin account and database created successfully. Admin registered in both master and new database, and added as user in beeusers table.',
       data: {
         admin: {
-          id: result.admin.id,
-          firstname: result.admin.firstname,
-          lastname: result.admin.lastname,
-          email: result.admin.email,
-          role: result.admin.role,
-          createdAt: result.admin.createdAt
+          id: createdAdmin.id,
+          firstname: createdAdmin.firstname,
+          lastname: createdAdmin.lastname,
+          email: createdAdmin.email,
+          role: createdAdmin.role,
+          createdAt: createdAdmin.createdAt
         },
         database: {
-          id: result.database.id,
-          name: result.database.name,
-          displayName: result.database.displayName,
+          id: newDatabase.id,
+          name: newDatabase.name,
+          displayName: newDatabase.displayName,
           connectionString: '***HIDDEN***',
-          maxUsers: result.database.maxUsers,
-          maxStorage: result.database.maxStorage,
-          createdAt: result.database.createdAt
+          maxUsers: newDatabase.maxUsers,
+          maxStorage: newDatabase.maxStorage,
+          createdAt: newDatabase.createdAt
         },
         adminUser: {
-          id: result.adminUser.id,
-          firstname: result.adminUser.firstname,
-          lastname: result.adminUser.lastname,
-          email: result.adminUser.email,
-          role: result.adminUser.role,
-          isAdmin: result.adminUser.isAdmin,
-          adminId: result.adminUser.adminId,
-          createdAt: result.adminUser.createdAt
+          id: adminUser.id,
+          firstname: adminUser.firstname,
+          lastname: adminUser.lastname,
+          email: adminUser.email,
+          role: adminUser.role,
+          isAdmin: adminUser.isAdmin,
+          adminId: adminUser.adminId,
+          createdAt: adminUser.createdAt
         }
       }
     }, { status: 201 });
@@ -431,12 +596,16 @@ export async function POST(request: NextRequest): Promise<NextResponse<AdminRegi
       );
     }
     
-    if (error.message.includes('Physical database creation not supported')) {
+    if (error.message.includes('Database creation failed')) {
       return NextResponse.json<AdminRegistrationResponse>(
-        { 
-          success: false, 
-          error: 'This operation is not supported in the current environment. Using existing database instead.' 
-        },
+        { success: false, error: 'Failed to create database. Please contact system administrator.' },
+        { status: 500 }
+      );
+    }
+    
+    if (error.message.includes('Schema application failed')) {
+      return NextResponse.json<AdminRegistrationResponse>(
+        { success: false, error: 'Failed to set up database schema. Please contact system administrator.' },
         { status: 500 }
       );
     }
