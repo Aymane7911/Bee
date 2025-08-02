@@ -146,15 +146,15 @@ export async function POST(request: NextRequest) {
       );
     }
  
-    const parseCoordinate = (value: any): number | null => {
+    const parseCoordinate = (value: any): number => {
       if (value === null || value === undefined || value === '') {
-        return null;
+        return 0; // Default to 0 instead of null
       }
              
       const parsed = typeof value === 'string' ? parseFloat(value) : Number(value);
              
       if (isNaN(parsed)) {
-        return null;
+        return 0; // Default to 0 for invalid numbers
       }
              
       return parsed;
@@ -382,6 +382,21 @@ export async function PUT(request: NextRequest) {
       updateData.jarsUsed = totalJarsUsed;
     }
 
+    // Helper function to safely parse coordinates
+    const parseCoordinateForUpdate = (value: any): number => {
+      if (value == null || value === '' || value === undefined) {
+        return 0; // Default to 0 instead of null
+      }
+      
+      const parsed = typeof value === 'string' ? parseFloat(value) : Number(value);
+      
+      if (isNaN(parsed)) {
+        return 0; // Default to 0 for invalid numbers
+      }
+      
+      return parsed;
+    };
+
     // Update the batch using transaction for data consistency
     const updatedBatch = await prisma.$transaction(async (tx) => {
       // Update the batch
@@ -408,8 +423,8 @@ export async function PUT(request: NextRequest) {
               where: { id: existingApiary.id },
               data: {
                 hiveCount: apiaryData.hiveCount || 0,
-                latitude: apiaryData.latitude || null,
-                longitude: apiaryData.longitude || null,
+                latitude: parseCoordinateForUpdate(apiaryData.latitude),
+                longitude: parseCoordinateForUpdate(apiaryData.longitude),
                 kilosCollected: apiaryData.kilosCollected || 0,
               }
             });
@@ -420,12 +435,8 @@ export async function PUT(request: NextRequest) {
                 name: apiaryData.name || '',
                 number: apiaryData.number || '',
                 hiveCount: apiaryData.hiveCount || 0,
-                latitude: apiaryData.latitude != null && apiaryData.latitude !== '' && !isNaN(parseFloat(apiaryData.latitude))
-                  ? parseFloat(apiaryData.latitude)
-                  : null,
-                longitude: apiaryData.longitude != null && apiaryData.longitude !== '' && !isNaN(parseFloat(apiaryData.longitude))
-                  ? parseFloat(apiaryData.longitude)
-                  : null,
+                latitude: parseCoordinateForUpdate(apiaryData.latitude),
+                longitude: parseCoordinateForUpdate(apiaryData.longitude),
                 kilosCollected: apiaryData.kilosCollected || 0,
                 databaseId: user.databaseId,
                 batchId: batchId,
