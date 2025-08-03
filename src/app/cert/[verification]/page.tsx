@@ -22,8 +22,8 @@ async function getCertificationData(verificationCode: string): Promise<Certifica
     // Use absolute URL for server-side fetching in Next.js
     const isServer = typeof window === 'undefined';
     const baseUrl = isServer 
-      ? process.env.NEXTAUTH_URL || process.env.VERCEL_URL || 'http://localhost:3000'
-      : '';
+  ? process.env.NEXTAUTH_URL || process.env.RENDER_EXTERNAL_URL || process.env.VERCEL_URL || 'http://localhost:3000'
+  : '';
     
     const url = `${baseUrl}/api/certification/${verificationCode}`;
     
