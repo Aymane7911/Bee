@@ -1,4 +1,4 @@
-// app/api/admin/register/route.ts - FIXED VERSION
+// app/api/admin/register/route.ts - FIXED VERSION WITH SSL SUPPORT
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { NextRequest, NextResponse } from 'next/server';
@@ -82,6 +82,38 @@ const ADMIN_CODES: Record<string, string> = {
   admin: process.env.ADMIN_CODE || 'admin_2024_secure'
 };
 
+// Get SSL configuration based on environment
+function getSSLConfig(): { ssl: false } | { ssl: { rejectUnauthorized: boolean; cert?: string; key?: string; ca?: string } } {
+  const sslMode = process.env.DB_SSL_MODE || 'require';
+  const sslCert = process.env.DB_SSL_CERT;
+  const sslKey = process.env.DB_SSL_KEY;
+  const sslCA = process.env.DB_SSL_CA;
+  
+  // For local development without SSL
+  if (sslMode === 'disable') {
+    return { ssl: false };
+  }
+  
+  // For cloud databases (like Railway, Supabase, etc.)
+  if (sslMode === 'require' || sslMode === 'prefer') {
+    return {
+      ssl: {
+        rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false',
+        ...(sslCert && { cert: sslCert }),
+        ...(sslKey && { key: sslKey }),
+        ...(sslCA && { ca: sslCA }),
+      }
+    };
+  }
+  
+  // Default SSL configuration for most cloud providers
+  return {
+    ssl: {
+      rejectUnauthorized: false, // Common for managed databases
+    }
+  };
+}
+
 // Database creation without user creation
 async function createPhysicalDatabase(databaseName: string): Promise<{
   connectionString: string;
@@ -90,12 +122,19 @@ async function createPhysicalDatabase(databaseName: string): Promise<{
 }> {
   console.log('🔍 Testing master database connection...');
   
+  const sslConfig = getSSLConfig();
+  console.log('🔐 Using SSL configuration:', { 
+    ssl: sslConfig.ssl !== false ? 'enabled' : 'disabled',
+    rejectUnauthorized: sslConfig.ssl !== false && typeof sslConfig.ssl === 'object' ? sslConfig.ssl.rejectUnauthorized : 'N/A'
+  });
+  
   const masterClient = new Client({
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432'),
     user: process.env.DB_ADMIN_USER || 'postgres',
     password: process.env.DB_ADMIN_PASSWORD,
-    database: 'postgres'
+    database: 'postgres',
+    ...sslConfig
   });
 
   const dbUser = process.env.DB_ADMIN_USER || 'postgres';
@@ -121,13 +160,37 @@ async function createPhysicalDatabase(databaseName: string): Promise<{
     
     await masterClient.end();
     
-    const connectionString = `postgresql://${dbUser}:${dbPassword}@${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || '5432'}/${databaseName}`;
+    // Build connection string with SSL parameters
+    const baseConnectionString = `postgresql://${dbUser}:${dbPassword}@${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || '5432'}/${databaseName}`;
+    
+    // Add SSL parameters to connection string if needed
+    let connectionString = baseConnectionString;
+    if (sslConfig.ssl !== false) {
+      const sslParams = new URLSearchParams();
+      sslParams.append('sslmode', process.env.DB_SSL_MODE || 'require');
+      
+      if (typeof sslConfig.ssl === 'object' && sslConfig.ssl.rejectUnauthorized === false) {
+        sslParams.append('sslmode', 'require');
+      }
+      
+      connectionString = `${baseConnectionString}?${sslParams.toString()}`;
+    }
     
     console.log('✅ Physical database created successfully');
     return { connectionString, dbUser, dbPassword };
     
   } catch (error: any) {
     console.error('❌ Database creation error:', error.message);
+    
+    // Enhanced error handling for SSL-related issues
+    if (error.message.includes('SSL') || error.message.includes('TLS')) {
+      console.error('🔐 SSL/TLS Connection Issue:');
+      console.error('   1. Check if your database requires SSL connections');
+      console.error('   2. Verify DB_SSL_MODE environment variable (require/prefer/disable)');
+      console.error('   3. For cloud databases, ensure SSL certificates are properly configured');
+      console.error('   4. Current SSL config:', sslConfig);
+    }
+    
     try {
       await masterClient.end();
     } catch (endError) {
@@ -517,12 +580,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<AdminRegi
       if (dbConnectionInfo) {
         try {
           console.log('🧹 Attempting to cleanup created database...');
+          const sslConfig = getSSLConfig();
           const masterClient = new Client({
             host: process.env.DB_HOST || 'localhost',
             port: parseInt(process.env.DB_PORT || '5432'),
             user: process.env.DB_ADMIN_USER || 'postgres',
             password: process.env.DB_ADMIN_PASSWORD,
-            database: 'postgres'
+            database: 'postgres',
+            ...sslConfig
           });
           
           await masterClient.connect();
@@ -591,6 +656,16 @@ export async function POST(request: NextRequest): Promise<NextResponse<AdminRegi
         { 
           success: false, 
           error: 'Database connection failed. Please check your database configuration.' 
+        },
+        { status: 500 }
+      );
+    }
+    
+    if (error.message.includes('SSL') || error.message.includes('TLS')) {
+      return NextResponse.json<AdminRegistrationResponse>(
+        { 
+          success: false, 
+          error: 'SSL/TLS connection failed. Please check your database SSL configuration and environment variables.' 
         },
         { status: 500 }
       );
